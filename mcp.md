@@ -12,8 +12,7 @@ Your trial task is to implement the MCP system.
 
 - **Frontend**: CopilotKit (React)
 - **Transcription**: PENDING
-- **Action Detection**: CopilotKit handles this via Backend ACtions
-- **Context Integration**: MCP (Open MCP Client / Server)
+- **Context Integration & Action Detection**: MCP (Open MCP Client / Server)
 - **Backend API**: Node.js / Express
 
 ## Task List - MCP
@@ -22,9 +21,7 @@ We want to implement a rudimentary MCP. The only tool we need now is a scheduler
 
 - **Integrate MCP Memory**: Ensure seamless data flow into MCP memory, and allow tools to be invoked from MCP
   - [Docs for MCP from CopilotKit](https://docs.copilotkit.ai/guides/model-context-protocol)
-- **Action Detection & Tool Calls**: Detect actions from text chat and execute them - mostly handled by CopilotKit in Backend Actions
-  - [Backend Actions](https://docs.copilotkit.ai/guides/backend-actions/typescript-backend-actions)
 - **Example Tool Call (Scheduler)**: Create an example tool call
   - Create a scheduling tool/action that logs out the time desired for an appointment, the tool does not need to take any other actions of its own at this point
   - The copilot should listen to the context and suggest this action if the user says "book in at 4pm" or similar
-- **UI Customization**: When an action is matched by CopilotKit, we should show this in the frontend and let the user accept or reject the action. If they accept, then we make the tool call - this should be handled by [CopilotChat](https://docs.copilotkit.ai/reference/components/chat/CopilotChat)
+- **UI Customization**: When an action is suggested by MCP, we should show this in the frontend and let the user accept or reject the action. If they accept, then we make the tool call - this should be handled by [CopilotChat](https://docs.copilotkit.ai/reference/components/chat/CopilotChat)
