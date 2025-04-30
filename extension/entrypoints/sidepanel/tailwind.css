@@ -1,0 +1,31 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html, body, #root {
+    @apply h-full w-full m-0 p-0 overflow-hidden;
+  }
+}
+
+/* Custom component classes */
+.btn-primary {
+  @apply px-4 py-2 bg-green-500 text-white rounded hover:bg-green-600;
+}
+
+/* CopilotKit styles overrides */
+.copilotkit-chat-interface {
+  @apply border-none shadow-none h-full w-full max-w-full !important;
+}
+
+.copilotkit-chat-interface-messages-container {
+  @apply p-4 overflow-y-auto flex-1 !important;
+}
+
+.copilotkit-chat-interface-input-container {
+  @apply p-3 border-t border-gray-200 bg-white !important;
+}
+
+.copilotkit-chat-interface-input {
+  @apply rounded-lg border border-gray-200 p-3 !important;
+} 
