@@ -40,7 +40,7 @@ declare const clients: {
 };
 
 // Add the offscreen document path constant at the top of the file
-const OFFSCREEN_DOCUMENT_PATH = "offscreen.html";
+const OFFSCREEN_DOCUMENT_PATH = "entrypoints/offscreen/offscreen.html";
 const OFFSCREEN_REASON = "USER_MEDIA";
 
 export default defineBackground(() => {
@@ -239,14 +239,14 @@ export default defineBackground(() => {
           case "openPermissionPage":
             console.log("Background: Opening permission page");
             const permissionUrl = chrome.runtime.getURL(
-              "/requestPermissions.html"
+              "requestPermissions/requestPermissions.html"
             );
             chrome.tabs
               .create({ url: permissionUrl })
               .then(() => {
                 sendResponse({ success: true });
               })
-              .catch((error) => {
+              .catch((error: Error) => {
                 console.error("Error opening permission page:", error);
                 sendResponse({ success: false, error: String(error) });
               });
@@ -351,7 +351,7 @@ export default defineBackground(() => {
               target: "offscreen",
             },
           },
-          (response) => {
+          (response: any) => {
             console.log(
               "Background: Received permission check response:",
               response
@@ -424,7 +424,7 @@ export default defineBackground(() => {
       console.log("Background: Creating offscreen document");
       await chrome.offscreen.createDocument({
         url: browser.runtime.getURL(OFFSCREEN_DOCUMENT_PATH),
-        reasons: [OFFSCREEN_REASON as chrome.offscreen.Reason],
+        reasons: [OFFSCREEN_REASON as any],
         justification: "Used for recording audio and tab capture",
       });
       console.log("Background: Offscreen document created successfully");

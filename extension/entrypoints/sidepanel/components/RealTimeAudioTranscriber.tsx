@@ -1,27 +1,12 @@
 import { useState, useEffect, useRef } from "react";
 import { useTranscriber } from "../hooks/useTranscriber";
 import useStore from "../utils/store";
-import "./AudioRecorderComponent.css"; // Reuse the existing CSS
 
 // Define the sampling rate for audio processing
 const SAMPLING_RATE = 16000;
 
 // TypeScript declaration for browser API used in WXT
 declare const browser: any;
-declare const chrome: {
-  runtime: {
-    sendMessage: (message: any, callback?: (response: any) => void) => void;
-    onMessage: {
-      addListener: (
-        callback: (request: any, sender: any, sendResponse: any) => void
-      ) => void;
-      removeListener: (
-        callback: (request: any, sender: any, sendResponse: any) => void
-      ) => void;
-    };
-    getURL: (path: string) => string;
-  };
-};
 
 // Type for permission status
 type PermissionStatus = "unknown" | "granted" | "denied";
@@ -48,10 +33,6 @@ function RealTimeAudioTranscriber() {
   const [transcriptionStatus, setTranscriptionStatus] = useState("");
   const [isTranscribing, setIsTranscribing] = useState(false);
 
-  // Debug state
-  const [debugMode, setDebugMode] = useState(false);
-  const [modelInfo, setModelInfo] = useState<string>("");
-
   // Get store functions
   const updateTranscription = useStore((state) => state.updateTranscription);
 
@@ -67,45 +48,63 @@ function RealTimeAudioTranscriber() {
   const isProcessingAudioRef = useRef<boolean>(false);
   const processingIntervalRef = useRef<number | null>(null);
 
+  // Add refs for auto-transcription
+  const transcriptionIntervalRef = useRef<number | null>(null);
+
+  // Add state for auto-transcription settings
+  const [autoTranscribe, setAutoTranscribe] = useState(true);
+  const [lastChunkTime, setLastChunkTime] = useState<number | null>(null);
+  const [transcriptionCount, setTranscriptionCount] = useState(0);
+
   // Watch transcriber output and update the store
   useEffect(() => {
     if (transcriber.output) {
-      console.log("Transcription output:", transcriber.output.text);
-
       // Update the global transcription state
       updateTranscription({
         text: transcriber.output.text,
         fullTranscript: transcriber.output.text,
       });
-
-      // Check for scheduling keywords
-      const hasSchedulingKeywords = checkForSchedulingKeywords(
-        transcriber.output.text
-      );
-
-      // Update local status with highlighting if needed
-      if (hasSchedulingKeywords) {
-        setTranscriptionStatus(`Detected scheduling information!`);
-      } else {
-        // Truncate the text if it's too long
-        const displayText =
-          transcriber.output.text.length > 70
-            ? transcriber.output.text.substring(0, 70) + "..."
-            : transcriber.output.text;
-        setTranscriptionStatus(`Transcribed: ${displayText}`);
-      }
     }
   }, [transcriber.output, updateTranscription]);
 
-  // Add logging for debugging
+  // Preload the Whisper model when component mounts
   useEffect(() => {
-    console.log("Transcriber state:", {
-      isBusy: transcriber.isBusy,
-      isModelLoading: transcriber.isModelLoading,
-      hasOutput: !!transcriber.output,
-      processingAudio: isProcessingAudioRef.current,
-    });
-  }, [transcriber.isBusy, transcriber.isModelLoading, transcriber.output]);
+    // Just monitor the model status and update our local state accordingly
+    const checkModelStatus = setInterval(() => {
+      if (
+        !transcriber.isModelLoading &&
+        transcriber.progressItems.length === 0
+      ) {
+        clearInterval(checkModelStatus);
+      } else if (
+        transcriber.isModelLoading ||
+        transcriber.progressItems.length > 0
+      ) {
+        // Show loading progress message with percentage if available
+        if (transcriber.progressItems.length > 0) {
+          const totalProgress =
+            transcriber.progressItems.reduce(
+              (sum, item) => sum + item.progress,
+              0
+            ) / transcriber.progressItems.length;
+
+          const progressPercent = Math.round(totalProgress * 100);
+        }
+      }
+    }, 1000);
+
+    // Safety timeout to clear interval if loading takes too long
+    setTimeout(() => {
+      if (checkModelStatus) {
+        clearInterval(checkModelStatus);
+      }
+    }, 30000); // 30 second max wait time - reduced from 60s
+
+    // Clean up function
+    return () => {
+      clearInterval(checkModelStatus);
+    };
+  }, [transcriber.isModelLoading, transcriber.progressItems.length]);
 
   // Helper function to check for scheduling keywords
   const checkForSchedulingKeywords = (text: string): boolean => {
@@ -225,8 +224,6 @@ function RealTimeAudioTranscriber() {
 
         return;
       } catch (directError) {
-        console.log("Could not get permission directly:", directError);
-
         // Try using the Permissions API as a fallback
         try {
           // @ts-ignore - Chrome specific API
@@ -253,11 +250,11 @@ function RealTimeAudioTranscriber() {
             setPermissionStatus("unknown");
           }
         } catch (permError) {
-          console.error("Error checking permission directly:", permError);
+          // Permissions API not available or error
         }
       }
     } catch (error) {
-      console.error("Error checking permission status:", error);
+      // Error checking permission status
     }
   };
 
@@ -286,16 +283,13 @@ function RealTimeAudioTranscriber() {
 
         return;
       } catch (directError) {
-        console.log(
-          "Could not get permission directly, opening permission page..."
-        );
+        // Direct request failed, try opening permission page
       }
 
       // If direct request fails, open the permission page
       await browser.runtime.sendMessage({ action: "openPermissionPage" });
       setRecordingStatus("Please grant microphone permission in the new tab.");
     } catch (error) {
-      console.error("Error requesting permission:", error);
       setRecordingStatus(
         `Error requesting permission: ${
           error instanceof Error ? error.message : "Unknown error"
@@ -316,21 +310,53 @@ function RealTimeAudioTranscriber() {
     }
 
     if (audioContextRef.current) {
-      audioContextRef.current.close().catch(console.error);
+      audioContextRef.current.close().catch(() => {
+        // Ignore errors when closing audio context
+      });
       audioContextRef.current = null;
     }
   };
 
-  // Process audio data for transcription
-  const processAudioForTranscription = async (audioBuffer: Float32Array) => {
-    if (isProcessingAudioRef.current || !isRecording) {
+  // Add a function to check if transcription is actually possible
+  const canTranscribe = (): boolean => {
+    // Check various conditions that might prevent transcription
+    if (transcriber.isModelLoading) {
+      setTranscriptionStatus(
+        "Cannot transcribe yet - Whisper model is still loading"
+      );
+      return false;
+    }
+
+    if (transcriber.isBusy) {
+      return false;
+    }
+
+    if (transcriber.progressItems.length > 0) {
+      setTranscriptionStatus(
+        "Cannot transcribe yet - Model files are still downloading"
+      );
+      return false;
+    }
+
+    return true;
+  };
+
+  // Process audio data directly for transcription
+  const processAudioChunkDirectly = async (audioData: Float32Array) => {
+    if (isProcessingAudioRef.current) {
+      return;
+    }
+
+    // Check if transcription is possible
+    if (!canTranscribe()) {
       return;
     }
 
     try {
       isProcessingAudioRef.current = true;
-      console.log("Starting transcription of audio chunk...");
-      setTranscriptionStatus("Processing audio for transcription...");
+      setTranscriptionStatus("Processing 5-second audio chunk...");
+
+      setLastChunkTime(Date.now());
 
       // Create a context if not already created
       if (!audioContextRef.current) {
@@ -342,35 +368,26 @@ function RealTimeAudioTranscriber() {
       // Create an audio buffer from the raw audio data
       const buffer = audioContextRef.current.createBuffer(
         1, // mono
-        audioBuffer.length,
+        audioData.length,
         SAMPLING_RATE
       );
 
       // Copy the audio data to the buffer
-      buffer.copyToChannel(audioBuffer, 0);
+      buffer.copyToChannel(audioData, 0);
 
       // Process with Whisper
-      console.log("Processing audio chunk with Whisper...", {
-        bufferLength: audioBuffer.length,
-        isModelLoading: transcriber.isModelLoading,
-        isBusy: transcriber.isBusy,
-      });
-
       await transcriber.start(buffer);
-      console.log("Transcription processing completed");
-
-      // Clear the buffer after processing
-      audioBufferRef.current = [];
+      setTranscriptionCount((prev) => prev + 1);
     } catch (error) {
-      console.error("Error processing audio for transcription:", error);
       setTranscriptionStatus(`Transcription error: ${error}`);
     } finally {
       isProcessingAudioRef.current = false;
     }
   };
 
-  // Setup audio processing for real-time transcription
-  const setupAudioProcessing = (stream: MediaStream) => {
+  // Add simple audio recorder implementation that bypasses MediaRecorder
+  // and works directly with audio data for more reliable transcription
+  const setupDirectAudioCapture = (stream: MediaStream) => {
     try {
       // Create audio context with correct sample rate
       const audioContext = new AudioContext({
@@ -378,87 +395,64 @@ function RealTimeAudioTranscriber() {
       });
       audioContextRef.current = audioContext;
 
-      console.log(
-        "Created audio context with sample rate:",
-        audioContext.sampleRate
-      );
-
       // Create source from stream
       const source = audioContext.createMediaStreamSource(stream);
 
-      // Use smaller buffer size for less latency, multiple of 256
-      const bufferSize = 2048;
+      // Use ScriptProcessor for direct audio processing (more reliable for our use case)
+      const processor = audioContext.createScriptProcessor(4096, 1, 1);
 
-      // Create processor node for real-time processing
-      const processor = audioContext.createScriptProcessor(bufferSize, 1, 1);
-      console.log("Created script processor with buffer size:", bufferSize);
+      // Set up buffer for collecting audio data
+      const bufferSize = Math.floor(SAMPLING_RATE * 5); // 5 seconds of audio
+      let audioBuffer = new Float32Array(bufferSize);
+      let audioPosition = 0;
+      let startTime = Date.now();
 
-      // Process audio data
+      // Process audio data in real-time
       processor.onaudioprocess = (e) => {
-        if (!isRecording) return;
+        if (!isRecording || !autoTranscribe) return;
 
         // Get audio data
         const inputData = e.inputBuffer.getChannelData(0);
 
-        // Clone the data
-        const audioData = new Float32Array(inputData.length);
-        audioData.set(inputData);
+        // Add to our buffer
+        for (let i = 0; i < inputData.length; i++) {
+          if (audioPosition < bufferSize) {
+            audioBuffer[audioPosition++] = inputData[i];
+          }
+        }
 
-        // Add to buffer for processing
-        audioBufferRef.current.push(audioData);
+        // Check if we have 5 seconds of audio data
+        const elapsed = (Date.now() - startTime) / 1000;
+        if (elapsed >= 5) {
+          // Create a copy of the data we've collected so far
+          const audioToProcess = audioBuffer.slice(0, audioPosition);
+
+          // Reset buffer and timer
+          audioBuffer = new Float32Array(bufferSize);
+          audioPosition = 0;
+          startTime = Date.now();
+
+          // Process this chunk
+          processAudioChunkDirectly(audioToProcess);
+        }
       };
 
-      // Connect the nodes
+      // Connect the processor
       source.connect(processor);
       processor.connect(audioContext.destination);
 
-      console.log(
-        "Audio processing setup complete, starting collection interval"
-      );
-
-      // Setup interval to process audio - shorter interval for more responsive transcription
-      processingIntervalRef.current = window.setInterval(() => {
-        if (
-          audioBufferRef.current.length > 0 &&
-          !isProcessingAudioRef.current
-        ) {
-          console.log(
-            `Processing collected audio buffers: ${audioBufferRef.current.length} chunks`
-          );
-
-          // Combine all buffers
-          const totalLength = audioBufferRef.current.reduce(
-            (acc, buf) => acc + buf.length,
-            0
-          );
-
-          console.log(`Combined buffer length: ${totalLength} samples`);
-
-          // Only process if we have enough audio data (at least 1 second)
-          if (totalLength >= SAMPLING_RATE) {
-            const combinedBuffer = new Float32Array(totalLength);
-            let offset = 0;
-
-            for (const buffer of audioBufferRef.current) {
-              combinedBuffer.set(buffer, offset);
-              offset += buffer.length;
-            }
-
-            // Process the combined buffer
-            processAudioForTranscription(combinedBuffer);
-          } else {
-            console.log(
-              "Not enough audio data collected yet, waiting for more"
-            );
-          }
-        }
-      }, 2000); // Process every 2 seconds for more responsive feedback
+      // Return disconnect function for cleanup
+      return () => {
+        processor.disconnect();
+        source.disconnect();
+      };
     } catch (error) {
-      console.error("Error setting up audio processing:", error);
-      setRecordingStatus(`Error setting up audio processing: ${error}`);
+      setRecordingStatus(`Error setting up audio capture: ${error}`);
+      return () => {};
     }
   };
 
+  // Modify the startRecording function
   const startRecording = async () => {
     try {
       if (permissionStatus !== "granted") {
@@ -467,31 +461,32 @@ function RealTimeAudioTranscriber() {
       }
 
       setRecordingStatus("Starting recording...");
-      setTranscriptionStatus("Initializing transcription...");
+      setTranscriptionCount(0);
+      setLastChunkTime(null);
 
       // Reset audio buffers
       audioBufferRef.current = [];
       isProcessingAudioRef.current = false;
 
-      // Get microphone stream
+      // Get microphone stream with high-quality settings
       const micStream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true,
+          sampleRate: SAMPLING_RATE, // Request specific sample rate
         },
       });
 
       streamRef.current = micStream;
 
-      // Setup audio processing for transcription
-      setupAudioProcessing(micStream);
+      // Set up direct audio capture for real-time transcription
+      const cleanup = setupDirectAudioCapture(micStream);
 
       // Start tab audio capture via background script
       const tabCaptureResponse = await browser.runtime.sendMessage({
         action: "startRecording",
       });
-      console.log("Tab capture response:", tabCaptureResponse);
 
       // Set recording state based on tab audio capture response
       if (tabCaptureResponse && tabCaptureResponse.tabAudioCaptured) {
@@ -517,24 +512,26 @@ function RealTimeAudioTranscriber() {
         }
       }
 
-      // Create a media recorder for the microphone
-      // Use the best supported audio format
+      // Create a media recorder for saving the recording
       const mimeType = getSupportedMimeType();
-      console.log("Using mime type for recording:", mimeType);
 
       const options = { mimeType };
       const mediaRecorder = new MediaRecorder(micStream, options);
       mediaRecorderRef.current = mediaRecorder;
       audioChunksRef.current = [];
 
-      // Set up event handlers
+      // Set up event handler to save chunks
       mediaRecorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
           audioChunksRef.current.push(event.data);
         }
       };
 
+      // Set up stop handler to save the recording
       mediaRecorder.onstop = async () => {
+        // Clean up the direct audio capture
+        cleanup();
+
         // Create a blob from the recorded chunks
         const audioBlob = new Blob(audioChunksRef.current, {
           type: mimeType,
@@ -567,14 +564,12 @@ function RealTimeAudioTranscriber() {
       };
 
       // Start recording
-      mediaRecorder.start(100); // Collect data every 100ms
+      mediaRecorder.start(1000); // Collect data every 1 second for saving
 
       setIsRecording(true);
-      setIsTranscribing(true);
+      setIsTranscribing(autoTranscribe);
       startTimer();
     } catch (error) {
-      console.error("Error starting recording:", error);
-
       // Handle specific permission errors
       if (error instanceof DOMException && error.name === "NotAllowedError") {
         setRecordingStatus(
@@ -638,13 +633,18 @@ function RealTimeAudioTranscriber() {
           processingIntervalRef.current = null;
         }
 
+        // Clear transcription interval if it exists
+        if (transcriptionIntervalRef.current) {
+          clearInterval(transcriptionIntervalRef.current);
+          transcriptionIntervalRef.current = null;
+        }
+
         // Notify the background script to stop tab audio capture
         await browser.runtime.sendMessage({ action: "stopRecording" });
       } else {
         setRecordingStatus("No active recording found");
       }
     } catch (error) {
-      console.error("Error stopping recording:", error);
       setRecordingStatus(
         `Error: ${
           error instanceof Error ? error.message : "Unknown error occurred"
@@ -689,10 +689,12 @@ function RealTimeAudioTranscriber() {
       return;
     }
 
-    try {
-      setTranscriptionStatus("Transcribing the last recording...");
-      console.log("Starting transcription of last recording:", audioUrl);
+    // Check if transcription is possible
+    if (!canTranscribe()) {
+      return;
+    }
 
+    try {
       // Fetch the audio data from the blob URL
       const response = await fetch(audioUrl);
       const audioBlob = await response.blob();
@@ -706,290 +708,316 @@ function RealTimeAudioTranscriber() {
       }
 
       // Decode the audio data
-      console.log("Decoding audio data...");
       const audioBuffer = await audioContextRef.current.decodeAudioData(
         arrayBuffer
       );
-      console.log("Audio decoded, duration:", audioBuffer.duration);
 
       // Process with Whisper
-      console.log("Processing with Whisper...");
       await transcriber.start(audioBuffer);
-
-      console.log("Transcription of recording completed");
     } catch (error) {
-      console.error("Error transcribing recorded audio:", error);
       setTranscriptionStatus(`Transcription error: ${error}`);
     }
   };
 
-  // Add a troubleshooting function to diagnose Whisper issues
-  const troubleshootWhisper = async () => {
-    try {
-      setModelInfo("Checking Whisper model status...");
-
-      // Log detailed info about transcriber state
-      console.log("Detailed transcriber state:", {
-        isBusy: transcriber.isBusy,
-        isModelLoading: transcriber.isModelLoading,
-        model: transcriber.model,
-        multilingual: transcriber.multilingual,
-        quantized: transcriber.quantized,
-        hasOutput: !!transcriber.output,
-        progressItems: transcriber.progressItems,
-      });
-
-      // Check WebWorker status
-      if (transcriber.progressItems.length > 0) {
-        const progress = transcriber.progressItems.map(
-          (item) => `${item.file}: ${(item.progress * 100).toFixed(1)}%`
-        );
-        setModelInfo(`Model loading in progress: ${progress.join(", ")}`);
-      } else if (transcriber.isModelLoading) {
-        setModelInfo("Model is loading but no progress data available");
-      } else if (transcriber.isBusy) {
-        setModelInfo("Model is currently processing audio");
-      } else {
-        setModelInfo(
-          "Model appears to be ready. If transcription isn't working, try reloading the page."
-        );
-      }
-
-      // Try to force a model reload by changing settings
-      if (!transcriber.isBusy && !transcriber.isModelLoading) {
-        // Toggle quantized setting to force reload
-        transcriber.setQuantized(!transcriber.quantized);
-        setTimeout(() => {
-          transcriber.setQuantized(!transcriber.quantized);
-          setModelInfo((prev) => prev + "\nForced model reload attempted.");
-        }, 500);
-      }
-    } catch (error) {
-      console.error("Error troubleshooting Whisper:", error);
-      setModelInfo(`Troubleshooting error: ${error}`);
-    }
-  };
-
   return (
-    <div className="audio-recorder">
-      <h1>Audio Recorder & Transcriber</h1>
-
-      <div className="status-container">
-        <p className="status-text">{recordingStatus}</p>
-        {isRecording && (
-          <div className="recording-indicator">
-            <span className="recording-dot"></span>
-            <span className="recording-time">{formatTime(recordingTime)}</span>
-            {tabAudioCaptured && (
-              <span className="recording-source">Tab Audio: Enabled</span>
+    <div className="flex flex-col space-y-4 p-4 max-w-full h-full text-gray-800 font-sans overflow-y-auto">
+      {/* Whisper Model Status */}
+      <div className="bg-white rounded-lg shadow p-4">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-lg font-medium">Whisper Model</h3>
+          <div>
+            {transcriber.isModelLoading ||
+            transcriber.progressItems.length > 0 ? (
+              <span className="px-3 py-1 text-xs bg-blue-100 text-blue-700 rounded-full font-medium">
+                Loading
+              </span>
+            ) : (
+              <span className="px-3 py-1 text-xs bg-green-100 text-green-700 rounded-full font-medium">
+                Ready
+              </span>
             )}
-            {isTranscribing && (
-              <span
-                className="recording-source"
-                style={{ backgroundColor: "#ebf4ff", color: "#3182ce" }}
+          </div>
+        </div>
+
+        {transcriber.isModelLoading || transcriber.progressItems.length > 0 ? (
+          <div className="mt-1">
+            {/* Simplified unified progress bar */}
+            <div className="w-full">
+              {(() => {
+                let progressPercent = 0;
+
+                if (transcriber.progressItems.length > 0) {
+                  const totalProgress =
+                    transcriber.progressItems.reduce(
+                      (sum, item) => sum + item.progress,
+                      0
+                    ) / transcriber.progressItems.length;
+
+                  progressPercent = Math.round(totalProgress * 100);
+                }
+
+                return (
+                  <>
+                    <div className="flex justify-between text-xs mb-2">
+                      <span className="font-medium text-gray-700">
+                        {progressPercent / 100 || 0}%
+                      </span>
+                      {transcriber.progressItems.length > 0 &&
+                        progressPercent > 0 && (
+                          <span className="text-gray-600">{100}%</span>
+                        )}
+                    </div>
+                    <div className="bg-gray-100 rounded-full h-2.5 overflow-hidden">
+                      <div
+                        className={`bg-blue-500 h-full transition-all duration-300 ${
+                          transcriber.progressItems.length === 0
+                            ? "animate-pulse w-1/4"
+                            : ""
+                        }`}
+                        style={
+                          transcriber.progressItems.length > 0
+                            ? { width: `${progressPercent / 100}%` }
+                            : {}
+                        }
+                      ></div>
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
+
+            <div className="text-xs text-gray-500 mt-2">
+              {transcriber.progressItems.length > 0
+                ? "Downloading model files. This only happens once."
+                : "Initializing transcription engine. Please wait..."}
+            </div>
+          </div>
+        ) : (
+          <div className="text-sm text-gray-600">
+            Ready for audio transcription. You can start recording.
+          </div>
+        )}
+      </div>
+
+      {/* Microphone Permission Status */}
+      <div className="bg-white rounded-lg shadow p-4">
+        <div className="flex items-center justify-between">
+          <h3 className="text-lg font-medium">Microphone</h3>
+          <div className="flex items-center">
+            <div
+              className={`w-3 h-3 rounded-full mr-2 ${
+                permissionStatus === "granted"
+                  ? "bg-green-500"
+                  : permissionStatus === "denied"
+                  ? "bg-red-500"
+                  : "bg-yellow-500"
+              }`}
+            ></div>
+            <span className="text-sm">
+              {permissionStatus === "granted"
+                ? "Access Granted"
+                : permissionStatus === "denied"
+                ? "Access Denied"
+                : "Permission Required"}
+            </span>
+          </div>
+        </div>
+
+        <div className="flex justify-center">
+          {permissionStatus !== "granted" && (
+            <button
+              onClick={requestMicrophonePermission}
+              className="flex items-center justify-center px-6 py-3 mt-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              Request Microphone Permission
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Auto-transcribe checkbox and Recording Controls */}
+      <div className="bg-white rounded-lg shadow p-4">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-lg font-medium">Recording</h3>
+          <label className="flex items-center cursor-pointer">
+            <input
+              type="checkbox"
+              checked={autoTranscribe}
+              onChange={() => setAutoTranscribe(!autoTranscribe)}
+              className="form-checkbox h-5 w-5 text-blue-600 rounded focus:ring-blue-500"
+            />
+            <span className="ml-2 text-gray-700 font-medium">
+              Auto-transcribe
+            </span>
+          </label>
+        </div>
+
+        <div className="flex justify-center">
+          {!isRecording ? (
+            <div className="flex gap-2">
+              <button
+                onClick={startRecording}
+                disabled={
+                  permissionStatus !== "granted" || transcriber.isModelLoading
+                }
+                className={`flex items-center justify-center px-6 py-3 rounded-md font-medium text-white ${
+                  permissionStatus !== "granted" || transcriber.isModelLoading
+                    ? "bg-gray-400 cursor-not-allowed"
+                    : "bg-blue-600 hover:bg-blue-700"
+                }`}
               >
-                Transcribing: Active
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  className="h-5 w-5 mr-2"
+                  viewBox="0 0 20 20"
+                  fill="currentColor"
+                >
+                  <circle cx="10" cy="10" r="8" />
+                </svg>
+                {transcriber.isModelLoading
+                  ? "Model is loading..."
+                  : "Start Recording"}
+              </button>
+              {audioUrl && (
+                <button
+                  onClick={transcribeLastRecording}
+                  disabled={
+                    permissionStatus !== "granted" || transcriber.isModelLoading
+                  }
+                  className={`flex items-center justify-center px-6 py-3 rounded-md font-medium text-white ${
+                    permissionStatus !== "granted" || transcriber.isModelLoading
+                      ? "bg-gray-400 cursor-not-allowed"
+                      : "bg-blue-600 hover:bg-blue-700"
+                  }`}
+                >
+                  Transcribe Last Recording
+                </button>
+              )}
+            </div>
+          ) : (
+            <button
+              onClick={stopRecording}
+              className="flex items-center justify-center px-6 py-3 rounded-md font-medium text-white bg-red-600 hover:bg-red-700"
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                className="h-5 w-5 mr-2"
+                viewBox="0 0 20 20"
+                fill="currentColor"
+              >
+                <rect x="5" y="5" width="10" height="10" />
+              </svg>
+              Stop Recording
+            </button>
+          )}
+        </div>
+
+        {isRecording && (
+          <div className="mt-4 flex items-center justify-center text-sm font-medium">
+            <div className="flex items-center">
+              <div className="w-3 h-3 bg-red-500 rounded-full animate-pulse mr-2"></div>
+              <span>Recording: {formatTime(recordingTime)}</span>
+            </div>
+
+            {recordingSource && (
+              <span className="ml-4 px-2 py-1 bg-gray-100 rounded-full text-xs">
+                Source:{" "}
+                {recordingSource === "both" ? "Mic + Tab" : recordingSource}
+              </span>
+            )}
+
+            {isTranscribing && (
+              <span className="ml-2 px-2 py-1 bg-blue-100 text-blue-700 rounded-full text-xs">
+                Transcribing: {autoTranscribe ? "Auto" : "Manual"}
               </span>
             )}
           </div>
         )}
 
-        {transcriptionStatus && (
-          <div
-            className={`transcription-status ${
-              transcriptionStatus.includes("Detected scheduling")
-                ? "scheduling"
-                : ""
-            }`}
-          >
-            {transcriptionStatus.includes("Detected scheduling") ? (
-              <div>
-                <p style={{ fontWeight: "600" }}>
-                  <span
-                    style={{
-                      display: "inline-block",
-                      width: "0.75rem",
-                      height: "0.75rem",
-                      backgroundColor: "#f59e0b",
-                      borderRadius: "50%",
-                      marginRight: "0.5rem",
-                    }}
-                  ></span>
-                  {transcriptionStatus}
-                </p>
-                <p style={{ fontSize: "0.8rem", marginTop: "0.25rem" }}>
-                  The system detected scheduling information and can create
-                  calendar events.
-                </p>
-              </div>
-            ) : (
-              <p>{transcriptionStatus}</p>
-            )}
+        {recordingStatus && (
+          <div className="mt-3 text-sm text-gray-600 text-center">
+            {recordingStatus}
           </div>
         )}
       </div>
 
-      <div className="controls">
-        {permissionStatus !== "granted" ? (
-          <button
-            className="permission-button"
-            onClick={requestMicrophonePermission}
-          >
-            Request Microphone Permission
-          </button>
-        ) : !isRecording ? (
-          <button
-            className="record-button"
-            onClick={startRecording}
-            disabled={isRecording || transcriber.isModelLoading}
-          >
-            {transcriber.isModelLoading
-              ? "Loading Whisper Model..."
-              : "Start Recording & Transcribe"}
-          </button>
-        ) : (
-          <button
-            className="stop-button"
-            onClick={stopRecording}
-            disabled={!isRecording}
-          >
-            Stop Recording
-          </button>
-        )}
-      </div>
+      {/* Transcript Display */}
+      <div className="bg-white rounded-lg shadow p-4 flex-grow">
+        <div className="flex justify-between items-center mb-3">
+          <h3 className="text-lg font-medium">Live Transcript</h3>
 
-      {/* Whisper status and troubleshooting */}
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          marginTop: "1rem",
-          fontSize: "0.8rem",
-        }}
-      >
-        <label
-          style={{ display: "flex", alignItems: "center", cursor: "pointer" }}
-        >
-          <input
-            type="checkbox"
-            checked={debugMode}
-            onChange={() => setDebugMode(!debugMode)}
-            style={{ marginRight: "0.5rem" }}
-          />
-          Debug Mode
-        </label>
-
-        <button onClick={troubleshootWhisper} className="troubleshoot-button">
-          Troubleshoot Transcription
-        </button>
-      </div>
-
-      {/* Debug information */}
-      {debugMode && (
-        <div className="debug-info">
-          <h3>Transcriber Status</h3>
-          <ul>
-            <li>Model: {transcriber.model}</li>
-            <li>Model Loading: {transcriber.isModelLoading ? "Yes" : "No"}</li>
-            <li>Processing: {transcriber.isBusy ? "Yes" : "No"}</li>
-            <li>Multilingual: {transcriber.multilingual ? "Yes" : "No"}</li>
-            <li>Quantized: {transcriber.quantized ? "Yes" : "No"}</li>
-          </ul>
-          {modelInfo && (
-            <div className="model-info">
-              <pre>{modelInfo}</pre>
-            </div>
+          {transcriber.output?.text && (
+            <button
+              onClick={() =>
+                navigator.clipboard.writeText(transcriber.output?.text || "")
+              }
+              className="text-xs px-3 py-1 bg-gray-100 hover:bg-gray-200 rounded-md"
+            >
+              Copy
+            </button>
           )}
         </div>
-      )}
 
-      {/* Whisper model loading indicator */}
-      {transcriber.isModelLoading && (
-        <div
-          style={{
-            padding: "0.75rem",
-            borderRadius: "0.5rem",
-            backgroundColor: "#ebf8ff",
-            marginTop: "0.75rem",
-            color: "#2b6cb0",
-          }}
-        >
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "center",
-              alignItems: "center",
-              gap: "0.5rem",
-            }}
-          >
-            <div
-              style={{
-                width: "0.75rem",
-                height: "0.75rem",
-                borderRadius: "50%",
-                backgroundColor: "#3182ce",
-                animation: "pulse 1.5s infinite",
-              }}
-            ></div>
-            <span>Loading Whisper transcription model...</span>
-          </div>
-        </div>
-      )}
-
-      {audioUrl && (
-        <div className="playback-container">
-          <h2>Last Recording</h2>
-          {recordingTimestamp && (
-            <p className="timestamp">
-              Recorded: {formatTimestamp(recordingTimestamp)}
+        <div className="border border-gray-200 rounded-lg p-4 min-h-[200px] max-h-[400px] overflow-y-auto bg-gray-50">
+          {transcriber.output?.text ? (
+            <p className="whitespace-pre-wrap text-gray-800">
+              {transcriber.output.text}
+            </p>
+          ) : (
+            <p className="text-gray-500 italic">
+              {transcriber.isModelLoading
+                ? "Waiting for model to load..."
+                : isRecording && autoTranscribe
+                ? "Listening for speech to transcribe..."
+                : "Start recording to see transcription here"}
             </p>
           )}
-          <p className="recording-info">
-            Source:{" "}
-            {recordingSource === "both"
-              ? "Microphone + Tab Audio"
-              : recordingSource === "tab"
-              ? "Tab Audio Only"
-              : "Microphone Only"}
-          </p>
-          <audio controls src={audioUrl} className="audio-player"></audio>
-          <div className="button-group">
-            <a
-              href={audioUrl}
-              download={`recording-${
-                recordingTimestamp
-                  ? new Date(recordingTimestamp).getTime()
-                  : Date.now()
-              }.webm`}
-              className="download-button"
-            >
-              Download Recording
-            </a>
+        </div>
+
+        {transcriptionStatus && (
+          <div
+            className={`mt-2 p-2 text-sm rounded-md ${
+              transcriptionStatus.includes("Detected scheduling")
+                ? "bg-amber-50 text-amber-800"
+                : "bg-blue-50 text-blue-700"
+            }`}
+          >
+            {transcriptionStatus}
+          </div>
+        )}
+      </div>
+
+      {/* Previous Recording (if available) */}
+      {audioUrl && (
+        <div className="bg-white rounded-lg shadow p-4">
+          <h3 className="text-lg font-medium mb-3">Previous Recording</h3>
+          <audio
+            controls
+            src={audioUrl}
+            className="w-full mb-3 rounded"
+          ></audio>
+          <div className="flex space-x-3">
             <button
               onClick={transcribeLastRecording}
-              className="transcribe-button"
               disabled={transcriber.isModelLoading || transcriber.isBusy}
+              className={`text-sm px-4 py-2 rounded-md font-medium ${
+                transcriber.isModelLoading || transcriber.isBusy
+                  ? "bg-gray-200 text-gray-500 cursor-not-allowed"
+                  : "bg-blue-100 text-blue-700 hover:bg-blue-200"
+              }`}
             >
               Transcribe This Recording
             </button>
+            <a
+              href={audioUrl}
+              download={`recording-${Date.now()}.webm`}
+              className="text-sm px-4 py-2 bg-green-100 text-green-700 hover:bg-green-200 rounded-md font-medium"
+            >
+              Download
+            </a>
           </div>
         </div>
       )}
-
-      <div className="info-text">
-        <p>
-          This extension records and transcribes audio from your microphone and
-          browser tab.
-        </p>
-        <p className="note">
-          Note: You must grant microphone permission to use this feature.
-        </p>
-        <p className="note">
-          Tab audio recording requires the current tab to be playing audio.
-        </p>
-        <p className="note">Real-time transcription is powered by Whisper.</p>
-      </div>
     </div>
   );
 }

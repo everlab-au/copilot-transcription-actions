@@ -4,16 +4,13 @@ import { CopilotKit } from "@copilotkit/react-core";
 import ChatTab from "./components/ChatTab";
 import TranscriptionTab from "./components/TranscriptionTab";
 import ToolRenderer from "./components/ToolRenderer";
-import DebugPanel from "./components/DebugPanel";
 import useMcpConnection from "./hooks/useMcpConnection";
 import useStore from "./utils/store";
-import NewComponent from "./components/NewComponent";
 // MCP server URL
 const MCP_SERVER_URL = "http://localhost:4000/copilotkit";
 
 function App() {
   const [activeTab, setActiveTab] = useState<"chat" | "transcription">("chat");
-  const [debugMode, setDebugMode] = useState<boolean>(true); // Enable debug mode by default for testing
 
   // Access Zustand store state
   const hasNewTranscription = useStore((state) => state.hasNewTranscription);
@@ -21,7 +18,6 @@ function App() {
   const hasSchedulingProposal = useStore(
     (state) => state.hasSchedulingProposal
   );
-  const fullTranscript = useStore((state) => state.fullTranscript);
   const storeSetActiveTab = useStore((state) => state.setActiveTab);
 
   // Check MCP server connection
@@ -75,13 +71,6 @@ function App() {
             >
               MCP: {mcpStatus.isConnected ? "Connected" : "Disconnected"}
             </div>
-
-            <button
-              onClick={() => setDebugMode(!debugMode)}
-              className="text-xs px-3 py-1 bg-gray-200 hover:bg-gray-300 rounded font-medium"
-            >
-              {debugMode ? "Hide Debug" : "Show Debug"}
-            </button>
           </div>
         </div>
 
@@ -126,8 +115,6 @@ function App() {
           {activeTab === "transcription" && <TranscriptionTab />}
         </div>
       </div>
-
-      {debugMode && <DebugPanel />}
     </CopilotKit>
   );
 }

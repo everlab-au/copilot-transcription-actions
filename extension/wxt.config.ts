@@ -26,14 +26,6 @@ export default defineConfig({
       default_title: "Open AI Meeting Assistant",
     },
 
-    // Add web accessible resources for permission request files and test page
-    web_accessible_resources: [
-      {
-        resources: ["requestPermissions/index.html", "permissionTest.html"],
-        matches: ["<all_urls>"],
-      },
-    ],
-
     // Specify host permissions to ensure microphone access works
     host_permissions: ["<all_urls>"],
 
