@@ -1,80 +1,22 @@
-import { useTranscriber } from "../hooks/useTranscriber";
-import { AudioManager } from "./AudioManager";
-import Transcript from "./Transcript";
 import { useEffect, useRef, useState } from "react";
 import useStore from "../utils/store";
+import RealTimeAudioTranscriber from "./RealTimeAudioTranscriber";
 
 interface TranscriptionTabProps {
   // Props can be added here as needed
 }
 
 const TranscriptionTab: React.FC<TranscriptionTabProps> = () => {
-  const transcriber = useTranscriber();
-  const lastTextRef = useRef<string>("");
-  const fullTranscriptRef = useRef<string>("");
-  const [pendingText, setPendingText] = useState<string>("");
-
-  // Get store actions
+  // Get store values and actions
   const updateTranscription = useStore((state) => state.updateTranscription);
   const proposeTool = useStore((state) => state.proposeTool);
+  const fullTranscript = useStore((state) => state.fullTranscript);
 
-  // Threshold in milliseconds to wait for more text before considering a segment complete
-  const BUFFER_THRESHOLD = 1000;
-  const bufferTimerRef = useRef<NodeJS.Timeout | null>(null);
-
-  // Process new transcription data
+  // Process the full transcript for special commands or actions
   useEffect(() => {
-    const transcribedText = transcriber.output?.text || "";
-    console.log("Transcription output:", transcribedText);
-
-    // Only process if we have new text
-    if (transcribedText && transcribedText !== lastTextRef.current) {
-      // Calculate the new text portion
-      const newText = transcribedText.replace(lastTextRef.current, "").trim();
-      console.log("New transcription text detected:", newText);
-
-      if (newText) {
-        // Add to pending text buffer
-        setPendingText((prev) => {
-          const updatedPendingText = prev ? `${prev} ${newText}` : newText;
-          console.log("Updated pending text buffer:", updatedPendingText);
-          return updatedPendingText;
-        });
-
-        // Clear any existing timer
-        if (bufferTimerRef.current) {
-          clearTimeout(bufferTimerRef.current);
-        }
-
-        // Set a timer to emit the aggregated text after a delay
-        bufferTimerRef.current = setTimeout(() => {
-          // We've waited long enough, emit the buffered text
-          emitBufferedText();
-          bufferTimerRef.current = null;
-        }, BUFFER_THRESHOLD);
-      }
-
-      // Update the last text reference
-      lastTextRef.current = transcribedText;
-    }
-  }, [transcriber.output?.text]);
-
-  // Process the buffered text as a complete segment
-  const emitBufferedText = () => {
-    if (pendingText) {
-      console.log("Processing buffered text as complete segment:", pendingText);
-
-      // Check for sentence completeness (basic heuristic)
-      const isComplete = /[.!?]$/.test(pendingText);
-      const textToEmit = isComplete ? pendingText : pendingText + ".";
-
-      // Update the full transcript
-      fullTranscriptRef.current = fullTranscriptRef.current
-        ? `${fullTranscriptRef.current}\n${textToEmit}`
-        : textToEmit;
-
-      // Detect scheduling patterns in the complete segment
-      const lowerText = textToEmit.toLowerCase();
+    if (fullTranscript) {
+      // Detect scheduling patterns in the transcript
+      const lowerText = fullTranscript.toLowerCase();
       const hasSchedulingKeywords =
         (lowerText.includes("schedule") ||
           lowerText.includes("meeting") ||
@@ -86,7 +28,7 @@ const TranscriptionTab: React.FC<TranscriptionTabProps> = () => {
           lowerText.includes("am"));
 
       if (hasSchedulingKeywords) {
-        console.log("DETECTED SCHEDULING in complete segment:", textToEmit);
+        console.log("DETECTED SCHEDULING in transcript");
 
         // Extract time and date using regex
         const timePattern = /\b(\d{1,2})\s*(am|pm|:\d{2})\b/i;
@@ -108,33 +50,54 @@ const TranscriptionTab: React.FC<TranscriptionTabProps> = () => {
           });
         }
       }
-
-      // Use Zustand store to update transcription
-      console.log("Using store to update transcription with complete segment");
-      updateTranscription({
-        text: textToEmit,
-        fullTranscript: fullTranscriptRef.current,
-      });
-
-      // Clear the pending text
-      setPendingText("");
     }
+  }, [fullTranscript, proposeTool]);
+
+  // Prepare the formatted transcript for display
+  const getFormattedTranscript = () => {
+    if (!fullTranscript) {
+      return "No transcription available yet. Start recording and transcribing to see content here.";
+    }
+
+    // Add any formatting or highlighting as needed
+    return fullTranscript;
   };
 
-  // Cleanup
-  useEffect(() => {
-    return () => {
-      if (bufferTimerRef.current) {
-        clearTimeout(bufferTimerRef.current);
-      }
-    };
-  }, []);
-
   return (
-    <div className="flex justify-center items-center min-h-screen">
-      <div className="container flex flex-col justify-center items-center">
-        <AudioManager transcriber={transcriber} />
-        <Transcript transcribedData={transcriber.output} />
+    <div className="flex flex-col w-full h-full p-4 space-y-6 overflow-auto">
+      {/* Use the new RealTimeAudioTranscriber component that combines recording and transcription */}
+      <RealTimeAudioTranscriber />
+
+      {/* Full transcript display */}
+      <div className="w-full mt-6 bg-white rounded-lg shadow p-4">
+        <div className="flex justify-between items-center mb-2">
+          <h3 className="text-lg font-medium">Full Transcript</h3>
+
+          {fullTranscript && (
+            <button
+              onClick={() => {
+                // Copy text to clipboard
+                navigator.clipboard.writeText(fullTranscript);
+              }}
+              className="text-xs px-2 py-1 bg-gray-200 hover:bg-gray-300 rounded"
+            >
+              Copy Text
+            </button>
+          )}
+        </div>
+
+        <div className="border rounded-lg p-4 max-h-96 overflow-y-auto whitespace-pre-wrap">
+          {getFormattedTranscript()}
+        </div>
+      </div>
+
+      {/* Footer with information */}
+      <div className="text-center text-xs text-gray-500 mt-auto">
+        <p>Start recording to automatically transcribe your audio.</p>
+        <p>
+          The system will detect scheduling keywords and offer to create
+          calendar events.
+        </p>
       </div>
     </div>
   );

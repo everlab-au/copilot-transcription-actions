@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Permission Test Page</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+      max-width: 500px;
+      margin: 0 auto;
+      padding: 20px;
+      line-height: 1.5;
+    }
+    h1 { color: #2563eb; }
+    .card {
+      border: 1px solid #ccc;
+      padding: 15px;
+      margin: 15px 0;
+      border-radius: 8px;
+    }
+    button {
+      background-color: #2563eb;
+      color: white;
+      border: none;
+      padding: 10px 15px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 16px;
+      margin: 10px 0;
+    }
+  </style>
+</head>
+<body>
+  <h1>Permission Test Page</h1>
+  <p>This is a test page to debug Chrome extension file URL resolution issues.</p>
+  
+  <div class="card">
+    <h2>Extension URLs</h2>
+    <div id="urls"></div>
+  </div>
+  
+  <div class="card">
+    <h2>Permission Test</h2>
+    <button id="testPermission">Request Microphone Permission Directly</button>
+    <div id="permissionResult"></div>
+  </div>
+
+  <script>
+    // Display runtime URL info
+    const urlsDiv = document.getElementById('urls');
+    const permissionResultDiv = document.getElementById('permissionResult');
+    const testPermissionBtn = document.getElementById('testPermission');
+    
+    // Get extension URLs
+    urlsDiv.innerHTML = `
+      <p>Extension ID: ${chrome.runtime.id}</p>
+      <p>Base URL: ${chrome.runtime.getURL("")}</p>
+      <p>Permission URL: ${chrome.runtime.getURL("requestPermissions/index.html")}</p>
+      <p>Offscreen URL: ${chrome.runtime.getURL("offscreen/offscreen.html")}</p>
+    `;
+    
+    // Test permission button
+    testPermissionBtn.addEventListener('click', async () => {
+      permissionResultDiv.textContent = "Requesting microphone permission...";
+      
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        stream.getTracks().forEach(track => track.stop());
+        permissionResultDiv.textContent = "✅ Microphone permission granted!";
+      } catch (error) {
+        permissionResultDiv.textContent = `❌ Error: ${error.message}`;
+      }
+    });
+  </script>
+</body>
+</html> 

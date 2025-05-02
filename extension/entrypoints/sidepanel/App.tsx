@@ -7,6 +7,7 @@ import ToolRenderer from "./components/ToolRenderer";
 import DebugPanel from "./components/DebugPanel";
 import useMcpConnection from "./hooks/useMcpConnection";
 import useStore from "./utils/store";
+import NewComponent from "./components/NewComponent";
 // MCP server URL
 const MCP_SERVER_URL = "http://localhost:4000/copilotkit";
 
