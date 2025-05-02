@@ -50,6 +50,8 @@ function RealTimeAudioTranscriber() {
 
   // Add refs for auto-transcription
   const transcriptionIntervalRef = useRef<number | null>(null);
+  const autoTranscriptionBufferRef = useRef<Float32Array[]>([]);
+  const lastTranscriptionTimeRef = useRef<number>(0);
 
   // Add state for auto-transcription settings
   const [autoTranscribe, setAutoTranscribe] = useState(true);
@@ -105,21 +107,6 @@ function RealTimeAudioTranscriber() {
       clearInterval(checkModelStatus);
     };
   }, [transcriber.isModelLoading, transcriber.progressItems.length]);
-
-  // Helper function to check for scheduling keywords
-  const checkForSchedulingKeywords = (text: string): boolean => {
-    const lowerText = text.toLowerCase();
-    return (
-      (lowerText.includes("schedule") ||
-        lowerText.includes("meeting") ||
-        lowerText.includes("appointment")) &&
-      (lowerText.includes("at ") ||
-        lowerText.includes(" for ") ||
-        lowerText.includes("o'clock") ||
-        lowerText.includes("pm") ||
-        lowerText.includes("am"))
-    );
-  };
 
   useEffect(() => {
     // Check if permission was already granted from storage

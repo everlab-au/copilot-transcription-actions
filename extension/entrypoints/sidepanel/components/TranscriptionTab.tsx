@@ -104,47 +104,6 @@ const TranscriptionTab: React.FC<TranscriptionTabProps> = () => {
     };
   }, [transcriber]);
 
-  // Process the full transcript for special commands or actions
-  useEffect(() => {
-    if (fullTranscript) {
-      // Detect scheduling patterns in the transcript
-      const lowerText = fullTranscript.toLowerCase();
-      const hasSchedulingKeywords =
-        (lowerText.includes("schedule") ||
-          lowerText.includes("meeting") ||
-          lowerText.includes("appointment")) &&
-        (lowerText.includes("at ") ||
-          lowerText.includes(" for ") ||
-          lowerText.includes("o'clock") ||
-          lowerText.includes("pm") ||
-          lowerText.includes("am"));
-
-      if (hasSchedulingKeywords) {
-        console.log("DETECTED SCHEDULING in transcript");
-
-        // Extract time and date using regex
-        const timePattern = /\b(\d{1,2})\s*(am|pm|:\d{2})\b/i;
-        const datePattern =
-          /\b(tomorrow|today|next\s+\w+|this\s+\w+|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i;
-
-        const timeMatch = lowerText.match(timePattern);
-        const dateMatch = lowerText.match(datePattern);
-
-        if (timeMatch) {
-          // If we've detected scheduling with a time, notify the system
-          proposeTool({
-            toolName: "scheduleAppointment",
-            parameters: {
-              time: timeMatch[0],
-              date: dateMatch ? dateMatch[0] : undefined,
-              description: "Meeting from transcript",
-            },
-          });
-        }
-      }
-    }
-  }, [fullTranscript, proposeTool]);
-
   // Render loading indicator if model is still loading
   const renderModelLoadingStatus = () => {
     if (modelLoadingStatus === "ready") return null;

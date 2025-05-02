@@ -15,9 +15,6 @@ function App() {
   // Access Zustand store state
   const hasNewTranscription = useStore((state) => state.hasNewTranscription);
   const hasNewAction = useStore((state) => state.hasNewAction);
-  const hasSchedulingProposal = useStore(
-    (state) => state.hasSchedulingProposal
-  );
   const storeSetActiveTab = useStore((state) => state.setActiveTab);
 
   // Check MCP server connection
@@ -80,19 +77,12 @@ function App() {
               activeTab === "chat"
                 ? "border-indigo-600 text-indigo-600"
                 : "border-transparent"
-            } ${hasNewAction ? "animate-pulse-tab bg-red-50" : ""} ${
-              hasSchedulingProposal ? "bg-orange-100" : ""
-            }`}
+            } ${hasNewAction ? "animate-pulse-tab bg-red-50" : ""}`}
             onClick={() => handleTabChange("chat")}
           >
             Chat{" "}
             {hasNewAction && (
               <span className="inline-block w-2 h-2 ml-1 bg-red-500 rounded-full"></span>
-            )}
-            {hasSchedulingProposal && (
-              <span className="ml-2 text-xs px-1.5 py-0.5 bg-orange-200 text-orange-800 rounded-full">
-                New Schedule
-              </span>
             )}
           </div>
           <div
