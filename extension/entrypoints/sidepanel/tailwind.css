@@ -8,6 +8,50 @@
   }
 }
 
+/* Custom animations */
+@keyframes bounce-slow {
+  0%, 100% {
+    transform: translateY(-10%);
+    animation-timing-function: cubic-bezier(0.8, 0, 1, 1);
+  }
+  50% {
+    transform: translateY(0);
+    animation-timing-function: cubic-bezier(0, 0, 0.2, 1);
+  }
+}
+
+@keyframes fade-in {
+  0% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes pulse-tab {
+  0%, 100% {
+    background-color: rgba(239, 246, 255, 0.7);
+  }
+  50% {
+    background-color: rgba(219, 234, 254, 1);
+  }
+}
+
+@layer utilities {
+  .animate-bounce-slow {
+    animation: bounce-slow 2s infinite;
+  }
+
+  .animate-fade-in {
+    animation: fade-in 0.5s ease-out;
+  }
+
+  .animate-pulse-tab {
+    animation: pulse-tab 2s infinite;
+  }
+}
+
 /* Custom component classes */
 .btn-primary {
   @apply px-4 py-2 bg-green-500 text-white rounded hover:bg-green-600;

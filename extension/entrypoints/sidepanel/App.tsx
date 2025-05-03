@@ -15,6 +15,7 @@ function App() {
   // Access Zustand store state
   const hasNewTranscription = useStore((state) => state.hasNewTranscription);
   const hasNewAction = useStore((state) => state.hasNewAction);
+  const hasSchedulingContent = useStore((state) => state.hasSchedulingContent);
   const storeSetActiveTab = useStore((state) => state.setActiveTab);
 
   // Check MCP server connection
@@ -73,29 +74,45 @@ function App() {
 
         <div className="flex border-b border-gray-200 bg-white">
           <div
-            className={`px-4 py-3 cursor-pointer border-b-2 font-medium ${
+            className={`px-4 py-3 cursor-pointer border-b-2 font-medium relative ${
               activeTab === "chat"
                 ? "border-indigo-600 text-indigo-600"
                 : "border-transparent"
-            } ${hasNewAction ? "animate-pulse-tab bg-red-50" : ""}`}
+            } ${
+              hasNewAction || (hasSchedulingContent && activeTab !== "chat")
+                ? "animate-pulse-tab"
+                : ""
+            }`}
             onClick={() => handleTabChange("chat")}
           >
-            Chat{" "}
+            Chat
             {hasNewAction && (
-              <span className="inline-block w-2 h-2 ml-1 bg-red-500 rounded-full"></span>
+              <span className="inline-flex items-center justify-center absolute -top-1 -right-1 h-5 w-5 text-xs bg-red-500 text-white rounded-full shadow-sm animate-pulse">
+                !
+              </span>
+            )}
+            {hasSchedulingContent && !hasNewAction && activeTab !== "chat" && (
+              <div className="absolute -top-1 -right-1">
+                <span className="inline-flex items-center justify-center h-5 w-5 text-xs bg-blue-500 text-white rounded-full shadow-sm animate-pulse">
+                  📅
+                </span>
+                <span className="absolute top-0 right-0 h-full w-full bg-blue-400 rounded-full animate-ping opacity-75"></span>
+              </div>
             )}
           </div>
           <div
-            className={`px-4 py-3 cursor-pointer border-b-2 font-medium ${
+            className={`px-4 py-3 cursor-pointer border-b-2 font-medium relative ${
               activeTab === "transcription"
                 ? "border-indigo-600 text-indigo-600"
                 : "border-transparent"
-            } ${hasNewTranscription ? "animate-pulse-tab bg-red-50" : ""}`}
+            } ${hasNewTranscription ? "animate-pulse-tab bg-blue-50" : ""}`}
             onClick={() => handleTabChange("transcription")}
           >
-            Transcription{" "}
+            Transcription
             {hasNewTranscription && (
-              <span className="inline-block w-2 h-2 ml-1 bg-red-500 rounded-full"></span>
+              <span className="inline-flex items-center justify-center absolute -top-1 -right-1 h-5 w-5 text-xs bg-blue-500 text-white rounded-full shadow-sm animate-pulse">
+                !
+              </span>
             )}
           </div>
         </div>

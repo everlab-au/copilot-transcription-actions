@@ -18,6 +18,7 @@ interface AppState {
   activeTab: "chat" | "transcription";
   hasNewTranscription: boolean; // Indicates if there's new transcription while user is on chat tab
   hasNewAction: boolean; // Indicates if there's new action while user is on transcription tab
+  hasSchedulingContent: boolean; // Indicates if there's scheduling content in the transcript
 
   // Actions
   updateTranscription: (data: { text: string; fullTranscript: string }) => void;
@@ -27,6 +28,7 @@ interface AppState {
     error?: string;
   }) => void;
   clearActionResults: () => void;
+  updateHasSchedulingContent: (value: boolean) => void;
 
   // UI state actions
   setActiveTab: (tab: "chat" | "transcription") => void;
@@ -42,6 +44,7 @@ const useStore = create<AppState>((set) => ({
   activeTab: "chat",
   hasNewTranscription: false,
   hasNewAction: false,
+  hasSchedulingContent: false,
 
   // Actions
   updateTranscription: (data) =>
@@ -66,6 +69,17 @@ const useStore = create<AppState>((set) => ({
     })),
 
   clearActionResults: () => set({ actionResults: [] }),
+
+  updateHasSchedulingContent: (value) =>
+    set((state) => ({
+      hasSchedulingContent: value,
+      // If we're on the transcription tab and scheduling content is detected,
+      // notify the chat tab
+      hasNewAction:
+        value && state.activeTab === "transcription"
+          ? true
+          : state.hasNewAction,
+    })),
 
   // UI state actions
   setActiveTab: (tab) =>
