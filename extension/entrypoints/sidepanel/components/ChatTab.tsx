@@ -1,4 +1,4 @@
-import { useState, useEffect, ReactNode } from "react";
+import { useState, useEffect, ReactNode, useRef } from "react";
 import { CopilotChat } from "@copilotkit/react-ui";
 import { useCopilotAction, useCopilotContext } from "@copilotkit/react-core";
 import useStore from "../utils/store";

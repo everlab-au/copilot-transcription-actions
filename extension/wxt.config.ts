@@ -14,6 +14,7 @@ export default defineConfig({
       "tabs",
       "offscreen",
       "activeTab",
+      "scripting",
     ],
 
     // Configure the side_panel

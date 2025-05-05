@@ -25,6 +25,7 @@ declare const browser: {
       currentWindow: boolean;
     }) => Promise<any[]>;
     sendMessage: (tabId: number, message: any) => Promise<any>;
+    get: (tabId: number) => Promise<any>;
   };
   storage: {
     local: {
@@ -56,13 +57,18 @@ export default defineBackground(() => {
   let recordingData: string | null = null;
   let currentRecordingMimeType: string = "audio/webm";
   let lastRecordingUrl: string | null = null;
+  let currentPanelTabId = null;
+  let recordingSource: "mic" | "tab" = "mic"; // Track the current recording source
+  let mediaRecorder: any = null;
+  let tabCaptureStream: MediaStream | null = null;
+  let audioChunks: BlobPart[] = [];
 
   // Configure the side panel to open when the action button is clicked
-  browser.sidePanel
-    .setPanelBehavior({ openPanelOnActionClick: true })
-    .catch((error: Error) =>
-      console.error("Error setting panel behavior:", error)
-    );
+  // browser.sidePanel
+  //   .setPanelBehavior({ openPanelOnActionClick: true })
+  //   .catch((error: Error) =>
+  //     console.error("Error setting panel behavior:", error)
+  //   );
 
   // For accessing chrome-specific APIs
   // @ts-ignore
@@ -88,6 +94,11 @@ export default defineBackground(() => {
         switch (messageType) {
           case "TOGGLE_RECORDING":
             if (request.message.data === "START") {
+              // Set recording source from the request if provided
+              if (request.message.source) {
+                recordingSource = request.message.source;
+              }
+
               initiateRecordingStart()
                 .then(() => sendResponse({ success: true }))
                 .catch((error: Error) => {
@@ -102,6 +113,15 @@ export default defineBackground(() => {
                   sendResponse({ success: false, error: error.toString() });
                 });
             }
+            break;
+
+          case "SET_RECORDING_SOURCE":
+            // Set the recording source (mic or tab)
+            recordingSource = request.message.source || "mic";
+            console.log(
+              `Background: Recording source set to ${recordingSource}`
+            );
+            sendResponse({ success: true });
             break;
 
           case "CHECK_PERMISSIONS":
@@ -176,6 +196,11 @@ export default defineBackground(() => {
         switch (request.action) {
           case "startRecording":
             console.log("Background: Received startRecording action");
+            // Set recording source if provided in the request
+            if (request.source) {
+              recordingSource = request.source;
+            }
+
             initiateRecordingStart()
               .then(() => {
                 sendResponse({ success: true });
@@ -254,7 +279,8 @@ export default defineBackground(() => {
 
           case "saveRecording":
             console.log("Background: Saving recording");
-            const { audioUrl, recordingSource } = request;
+            const { audioUrl } = request;
+            const recordingSrc = request.recordingSource || recordingSource;
 
             // Save recording to storage and update the lastRecordingUrl
             lastRecordingUrl = audioUrl;
@@ -265,7 +291,7 @@ export default defineBackground(() => {
                 lastRecording: {
                   url: audioUrl,
                   timestamp: new Date().toISOString(),
-                  source: recordingSource || "mic",
+                  source: recordingSrc,
                 },
               })
               .then(() => {
@@ -274,6 +300,7 @@ export default defineBackground(() => {
                   message: {
                     type: "RECORDING_COMPLETED",
                     audioUrl: audioUrl,
+                    source: recordingSrc,
                     autoTranscribe: false,
                   },
                 });
@@ -322,6 +349,14 @@ export default defineBackground(() => {
                   error: String(error),
                 });
               });
+            return true;
+
+          case "setRecordingSource":
+            console.log(
+              `Background: Setting recording source to ${request.source}`
+            );
+            recordingSource = request.source || "mic";
+            sendResponse({ success: true });
             return true;
         }
       }
@@ -380,9 +415,6 @@ export default defineBackground(() => {
       }
     });
   }
-
-  // Add the following functions to the existing background.ts file
-  // Place them inside the defineBackground callback
 
   async function hasOffscreenDocument() {
     try {
@@ -448,6 +480,7 @@ export default defineBackground(() => {
         message: {
           type,
           target: "offscreen",
+          source: recordingSource, // Include the current recording source
           ...data,
         },
       });
@@ -460,10 +493,188 @@ export default defineBackground(() => {
     }
   }
 
+  // Start tab audio capture
+  async function startTabAudioCapture() {
+    return new Promise(async (resolve, reject) => {
+      try {
+        console.log("Background: Starting tab audio capture");
+
+        // First, get the active tab
+        const tabs = await browser.tabs.query({
+          active: true,
+          currentWindow: true,
+        });
+        if (!tabs || tabs.length === 0) {
+          throw new Error("No active tab found");
+        }
+
+        const activeTab = tabs[0];
+        console.log(`Background: Capturing audio from tab ${activeTab.id}`);
+
+        // Use Chrome's tabCapture API to capture audio from the active tab
+        chrome.tabCapture.capture({ audio: true, video: false }, (stream) => {
+          if (chrome.runtime.lastError) {
+            console.error(
+              "Tab Capture Error:",
+              chrome.runtime.lastError.message
+            );
+            reject(new Error(chrome.runtime.lastError.message));
+            return;
+          }
+
+          if (!stream) {
+            const error = new Error(
+              "Failed to start tab audio capture - no stream returned"
+            );
+            console.error(error);
+            reject(error);
+            return;
+          }
+
+          console.log("Background: Tab audio capture stream obtained");
+          tabCaptureStream = stream;
+          tabAudioCapturing = true;
+
+          // Initialize recording with the stream
+          audioChunks = [];
+          try {
+            mediaRecorder = new MediaRecorder(stream, {
+              mimeType: currentRecordingMimeType,
+            });
+
+            mediaRecorder.ondataavailable = (event) => {
+              if (event.data.size > 0) {
+                audioChunks.push(event.data);
+                console.log(
+                  `Background: Tab audio data chunk received: ${event.data.size} bytes`
+                );
+              }
+            };
+
+            mediaRecorder.onstop = async () => {
+              console.log("Background: Tab audio MediaRecorder stopped");
+              if (audioChunks.length > 0) {
+                const audioBlob = new Blob(audioChunks, {
+                  type: currentRecordingMimeType,
+                });
+                const audioUrl = URL.createObjectURL(audioBlob);
+                lastRecordingUrl = audioUrl;
+
+                // Save the audio data
+                await saveTabAudioData(audioUrl);
+              }
+
+              // Stop all tracks in the stream
+              if (tabCaptureStream) {
+                tabCaptureStream.getTracks().forEach((track) => track.stop());
+                tabCaptureStream = null;
+              }
+
+              tabAudioCapturing = false;
+            };
+
+            // Start recording
+            mediaRecorder.start(100); // Collect data every 100ms
+            console.log("Background: Tab audio MediaRecorder started");
+            resolve(true);
+          } catch (error) {
+            console.error(
+              "Background: Error setting up MediaRecorder for tab audio:",
+              error
+            );
+            if (tabCaptureStream) {
+              tabCaptureStream.getTracks().forEach((track) => track.stop());
+              tabCaptureStream = null;
+            }
+            tabAudioCapturing = false;
+            reject(error);
+          }
+        });
+      } catch (error) {
+        console.error("Background: Error starting tab audio capture:", error);
+        tabAudioCapturing = false;
+        reject(error);
+      }
+    });
+  }
+
+  // Stop tab audio capture
+  async function stopTabAudioCapture() {
+    return new Promise((resolve, reject) => {
+      try {
+        console.log("Background: Stopping tab audio capture");
+
+        if (!tabAudioCapturing || !mediaRecorder) {
+          console.log("Background: No tab audio capture in progress");
+          resolve(true);
+          return;
+        }
+
+        if (mediaRecorder.state !== "inactive") {
+          // Stop the MediaRecorder
+          mediaRecorder.stop();
+          console.log("Background: Tab audio MediaRecorder stopping");
+
+          // Wait for onstop event which will save the audio
+          setTimeout(() => {
+            resolve(true);
+          }, 300); // Give a little time for onstop to fire
+        } else {
+          // Already stopped
+          console.log("Background: MediaRecorder already inactive");
+          resolve(true);
+        }
+      } catch (error) {
+        console.error("Background: Error stopping tab audio capture:", error);
+        // Clean up resources even if there was an error
+        if (tabCaptureStream) {
+          tabCaptureStream.getTracks().forEach((track) => track.stop());
+          tabCaptureStream = null;
+        }
+        tabAudioCapturing = false;
+        reject(error);
+      }
+    });
+  }
+
+  // Save tab audio data to storage
+  async function saveTabAudioData(audioUrl: string) {
+    try {
+      console.log("Background: Saving tab audio data");
+
+      // Save to browser storage
+      await browser.storage.local.set({
+        lastRecording: {
+          url: audioUrl,
+          timestamp: new Date().toISOString(),
+          source: "tab",
+        },
+      });
+
+      // Broadcast that recording is completed
+      chrome.runtime.sendMessage({
+        message: {
+          type: "RECORDING_COMPLETED",
+          audioUrl: audioUrl,
+          source: "tab",
+          autoTranscribe: false,
+        },
+      });
+
+      console.log("Background: Tab audio data saved successfully");
+      return true;
+    } catch (error) {
+      console.error("Background: Error saving tab audio data:", error);
+      throw error;
+    }
+  }
+
   function initiateRecordingStart() {
     return new Promise(async (resolve, reject) => {
       try {
-        console.log("Background: Initiating recording start");
+        console.log(
+          `Background: Initiating ${recordingSource} recording start`
+        );
 
         if (isRecording) {
           console.log("Background: Already recording, stopping first");
@@ -472,20 +683,12 @@ export default defineBackground(() => {
 
         // Reset recording state
         recordingData = null;
+        audioChunks = [];
 
-        // Create offscreen document if needed
-        try {
-          await createOffscreenDocument();
-        } catch (error) {
-          console.error("Error creating offscreen document:", error);
-          reject(error);
-          return;
-        }
-
-        // Send start recording message to offscreen document
-        sendMessageToOffscreenDocument("START_OFFSCREEN_RECORDING")
-          .then(() => {
-            console.log("Background: Recording started");
+        if (recordingSource === "tab") {
+          // For tab audio, use direct implementation
+          try {
+            await startTabAudioCapture();
             isRecording = true;
 
             // Notify UI that recording has started
@@ -493,15 +696,54 @@ export default defineBackground(() => {
               message: {
                 type: "RECORDING_STATUS",
                 status: "started",
+                source: "tab",
               },
             });
 
             resolve(true);
-          })
-          .catch((error) => {
-            console.error("Background: Error starting recording:", error);
+          } catch (error) {
+            console.error(
+              "Background: Error starting tab audio capture:",
+              error
+            );
             reject(error);
-          });
+          }
+        } else {
+          // For microphone, use offscreen document
+          // Create offscreen document if needed
+          try {
+            await createOffscreenDocument();
+          } catch (error) {
+            console.error("Error creating offscreen document:", error);
+            reject(error);
+            return;
+          }
+
+          // Send start recording message to offscreen document
+          sendMessageToOffscreenDocument("START_OFFSCREEN_RECORDING")
+            .then(() => {
+              console.log(`Background: ${recordingSource} recording started`);
+              isRecording = true;
+
+              // Notify UI that recording has started
+              chrome.runtime.sendMessage({
+                message: {
+                  type: "RECORDING_STATUS",
+                  status: "started",
+                  source: recordingSource,
+                },
+              });
+
+              resolve(true);
+            })
+            .catch((error) => {
+              console.error(
+                `Background: Error starting ${recordingSource} recording:`,
+                error
+              );
+              reject(error);
+            });
+        }
       } catch (error) {
         console.error("Background: Error in initiateRecordingStart:", error);
         reject(error);
@@ -512,7 +754,7 @@ export default defineBackground(() => {
   function initiateRecordingStop() {
     return new Promise(async (resolve, reject) => {
       try {
-        console.log("Background: Initiating recording stop");
+        console.log(`Background: Initiating ${recordingSource} recording stop`);
 
         if (!isRecording) {
           console.log("Background: Not recording, nothing to stop");
@@ -520,10 +762,10 @@ export default defineBackground(() => {
           return;
         }
 
-        // Send stop recording message to offscreen document
-        sendMessageToOffscreenDocument("STOP_OFFSCREEN_RECORDING")
-          .then(() => {
-            console.log("Background: Recording stopped");
+        if (recordingSource === "tab") {
+          // For tab audio, use direct implementation
+          try {
+            await stopTabAudioCapture();
             isRecording = false;
 
             // Check for lastRecordingUrl
@@ -534,6 +776,7 @@ export default defineBackground(() => {
                   type: "RECORDING_STATUS",
                   status: "stopped",
                   recordingUrl: lastRecordingUrl,
+                  source: "tab",
                 },
               });
             } else {
@@ -542,20 +785,85 @@ export default defineBackground(() => {
                 message: {
                   type: "RECORDING_STATUS",
                   status: "stopped",
+                  source: "tab",
                 },
               });
             }
 
             resolve(true);
-          })
-          .catch((error) => {
-            console.error("Background: Error stopping recording:", error);
+          } catch (error) {
+            console.error(
+              "Background: Error stopping tab audio capture:",
+              error
+            );
             reject(error);
-          });
+          }
+        } else {
+          // For microphone, use offscreen document
+          // Send stop recording message to offscreen document
+          sendMessageToOffscreenDocument("STOP_OFFSCREEN_RECORDING")
+            .then(() => {
+              console.log(`Background: ${recordingSource} recording stopped`);
+              isRecording = false;
+
+              // Check for lastRecordingUrl
+              if (lastRecordingUrl) {
+                // Notify UI that recording has stopped and provide URL
+                chrome.runtime.sendMessage({
+                  message: {
+                    type: "RECORDING_STATUS",
+                    status: "stopped",
+                    recordingUrl: lastRecordingUrl,
+                    source: recordingSource,
+                  },
+                });
+              } else {
+                // Just notify that recording stopped
+                chrome.runtime.sendMessage({
+                  message: {
+                    type: "RECORDING_STATUS",
+                    status: "stopped",
+                    source: recordingSource,
+                  },
+                });
+              }
+
+              resolve(true);
+            })
+            .catch((error) => {
+              console.error(
+                `Background: Error stopping ${recordingSource} recording:`,
+                error
+              );
+              reject(error);
+            });
+        }
       } catch (error) {
         console.error("Background: Error in initiateRecordingStop:", error);
         reject(error);
       }
     });
   }
+
+  // Handle action button click to open side panel
+  chrome.action.onClicked.addListener(async (tab: any) => {
+    if (!tab.id) return;
+
+    chrome.sidePanel.setOptions({
+      tabId: tab.id,
+      path: "sidepanel.html",
+      enabled: true,
+    });
+
+    chrome.sidePanel.open({ tabId: tab.id });
+    currentPanelTabId = tab.id;
+  });
+
+  // Track tab changes
+  chrome.tabs.onActivated.addListener(({ tabId }: { tabId: any }) => {
+    // Track the active tab for tab audio capture
+    if (tabAudioCapturing) {
+      console.log(`Tab changed while capturing audio. New tab ID: ${tabId}`);
+    }
+  });
 });

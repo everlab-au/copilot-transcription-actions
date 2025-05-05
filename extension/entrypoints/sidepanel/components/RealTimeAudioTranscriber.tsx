@@ -706,6 +706,111 @@ function RealTimeAudioTranscriber() {
     }
   };
 
+  let previousTabStream: MediaStream | null = null;
+
+  const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
+  const [isTabAudioRecording, setIsTabAudioRecording] =
+    useState<boolean>(false);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const audioElementRef = useRef<HTMLAudioElement | null>(null);
+
+  const startCapture = async () => {
+    setDownloadUrl(null);
+    setIsTabAudioRecording(true);
+
+    try {
+      if (previousTabStream) {
+        previousTabStream.getTracks().forEach((t) => t.stop());
+        previousTabStream = null;
+      }
+
+      const tabStream = await new Promise<MediaStream>((resolve, reject) => {
+        // @ts-ignore - Chrome browser API
+        chrome.tabCapture.capture(
+          { audio: true, video: false },
+          (stream: MediaStream) => {
+            // @ts-ignore - Chrome browser API
+            if (!stream || chrome.runtime.lastError) {
+              reject(
+                // @ts-ignore - Chrome browser API
+                chrome.runtime.lastError ||
+                  new Error("Failed to capture tab audio")
+              );
+            } else {
+              previousTabStream = stream;
+              resolve(stream);
+            }
+          }
+        );
+      });
+
+      // Connect the stream to audio element for live monitoring
+      if (audioElementRef.current) {
+        audioElementRef.current.srcObject = tabStream;
+        audioElementRef.current.play().catch((err) => {
+          console.error("Error playing audio:", err);
+        });
+      }
+
+      // const micStream = await navigator.mediaDevices.getUserMedia({
+      //   audio: true,
+      // });
+      // const mixedStream = new MediaStream([
+      //   ...tabStream.getAudioTracks(),
+      //   ...micStream.getAudioTracks(),
+      // ]);
+
+      const recorder = new MediaRecorder(tabStream);
+      recorderRef.current = recorder;
+      const chunks: Blob[] = [];
+
+      recorder.ondataavailable = (e) => chunks.push(e.data);
+      recorder.onstop = () => {
+        const blob = new Blob(chunks, { type: "audio/webm" });
+        const url = URL.createObjectURL(blob);
+        setDownloadUrl(url);
+        setIsTabAudioRecording(false);
+
+        // Stop live monitoring
+        if (audioElementRef.current) {
+          audioElementRef.current.srcObject = null;
+        }
+
+        // Make sure to stop all tracks in the stream
+        if (previousTabStream) {
+          previousTabStream.getTracks().forEach((track) => track.stop());
+          previousTabStream = null;
+        }
+      };
+
+      recorder.start();
+      // No timeout - will continue until stopCapture is called
+    } catch (err: unknown) {
+      console.error("Recording error:", err);
+      setIsTabAudioRecording(false);
+      alert(
+        `Recording failed: ${
+          err instanceof Error ? err.message : "Unknown error"
+        }`
+      );
+    }
+  };
+
+  const stopCapture = () => {
+    if (recorderRef.current && recorderRef.current.state !== "inactive") {
+      recorderRef.current.stop();
+
+      // Also ensure streams are stopped here in case onstop doesn't trigger
+      if (previousTabStream) {
+        previousTabStream.getTracks().forEach((track) => track.stop());
+      }
+
+      if (audioElementRef.current) {
+        audioElementRef.current.srcObject = null;
+      }
+    }
+  };
+
   return (
     <div className="flex flex-col space-y-4 p-4 max-w-full h-full text-gray-800 font-sans overflow-y-auto">
       {/* Whisper Model Status */}
@@ -839,7 +944,7 @@ function RealTimeAudioTranscriber() {
           </label>
         </div>
 
-        <div className="flex justify-center">
+        <div className="flex flex-col gap-4 items-center justify-center">
           {!isRecording ? (
             <div className="flex gap-2">
               <button
@@ -863,7 +968,7 @@ function RealTimeAudioTranscriber() {
                 </svg>
                 {transcriber.isModelLoading
                   ? "Model is loading..."
-                  : "Start Recording"}
+                  : "Start Microphone Recording"}
               </button>
               {audioUrl && (
                 <button
@@ -897,6 +1002,35 @@ function RealTimeAudioTranscriber() {
               Stop Recording
             </button>
           )}
+          {!isTabAudioRecording ? (
+            <button
+              className={`flex items-center justify-center px-6 py-3 rounded-md font-medium text-white bg-blue-600 hover:bg-blue-700`}
+              onClick={startCapture}
+            >
+              Start Audio Capture
+            </button>
+          ) : (
+            <button
+              className={`flex items-center justify-center px-6 py-3 rounded-md font-medium text-white bg-red-600 hover:bg-red-700`}
+              onClick={stopCapture}
+            >
+              Stop Capturing
+            </button>
+          )}
+
+          {isTabAudioRecording && (
+            <p style={{ color: "green" }}>🎙️ Capturing audio...</p>
+          )}
+
+          {downloadUrl && (
+            <div>
+              <a href={downloadUrl} download="captured_audio.webm">
+                Download Captured Audio
+              </a>
+            </div>
+          )}
+
+          <audio ref={audioElementRef} style={{ display: "none" }} controls />
         </div>
 
         {isRecording && (

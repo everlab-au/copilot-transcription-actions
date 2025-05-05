@@ -8,10 +8,6 @@ interface TranscriptionTabProps {
 }
 
 const TranscriptionTab: React.FC<TranscriptionTabProps> = () => {
-  // Get store values and actions
-  const proposeTool = useStore((state) => state.proposeTool);
-  const fullTranscript = useStore((state) => state.fullTranscript);
-
   // Get transcriber and track loading state
   const transcriber = useTranscriber();
   const [modelLoadingStatus, setModelLoadingStatus] =
