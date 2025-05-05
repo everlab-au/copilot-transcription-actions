@@ -11,6 +11,17 @@ declare const browser: any;
 // Type for permission status
 type PermissionStatus = "unknown" | "granted" | "denied";
 
+// New types for transcript messages
+type TranscriptSource = "microphone" | "tab";
+
+interface TranscriptMessage {
+  id: string;
+  text: string;
+  source: TranscriptSource;
+  timestamp: string;
+  audioUrl?: string;
+}
+
 function RealTimeAudioTranscriber() {
   // Recording state
   const [isRecording, setIsRecording] = useState(false);
@@ -32,6 +43,23 @@ function RealTimeAudioTranscriber() {
   const transcriber = useTranscriber();
   const [transcriptionStatus, setTranscriptionStatus] = useState("");
   const [isTranscribing, setIsTranscribing] = useState(false);
+
+  // Tab audio capture state
+  const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
+  const [isTabAudioRecording, setIsTabAudioRecording] =
+    useState<boolean>(false);
+  const [captureTimestamp, setCaptureTimestamp] = useState<string | null>(null);
+
+  // New state for transcript messages
+  const [transcriptMessages, setTranscriptMessages] = useState<
+    TranscriptMessage[]
+  >([]);
+  const [currentTranscriptionSource, setCurrentTranscriptionSource] =
+    useState<TranscriptSource>("microphone");
+
+  // Reference to track the session ID for grouping transcriptions
+  const micSessionIdRef = useRef<string | null>(null);
+  const tabSessionIdRef = useRef<string | null>(null);
 
   // Get store functions
   const updateTranscription = useStore((state) => state.updateTranscription);
@@ -58,16 +86,68 @@ function RealTimeAudioTranscriber() {
   const [lastChunkTime, setLastChunkTime] = useState<number | null>(null);
   const [transcriptionCount, setTranscriptionCount] = useState(0);
 
-  // Watch transcriber output and update the store
+  // Watch transcriber output and update the store and transcript history
   useEffect(() => {
-    if (transcriber.output) {
+    if (transcriber.output && transcriber.output.text.trim()) {
       // Update the global transcription state
       updateTranscription({
         text: transcriber.output.text,
         fullTranscript: transcriber.output.text,
       });
+
+      // Create a session ID if not exists for current source
+      if (
+        currentTranscriptionSource === "microphone" &&
+        !micSessionIdRef.current
+      ) {
+        micSessionIdRef.current = Date.now().toString();
+      } else if (
+        currentTranscriptionSource === "tab" &&
+        !tabSessionIdRef.current
+      ) {
+        tabSessionIdRef.current = Date.now().toString();
+      }
+
+      const currentSessionId =
+        currentTranscriptionSource === "microphone"
+          ? micSessionIdRef.current
+          : tabSessionIdRef.current;
+
+      // Create new message
+      const newMessage: TranscriptMessage = {
+        id: currentSessionId || Date.now().toString(),
+        text: transcriber.output.text,
+        source: currentTranscriptionSource,
+        timestamp: new Date().toISOString(),
+        audioUrl:
+          currentTranscriptionSource === "microphone"
+            ? audioUrl || undefined
+            : downloadUrl || undefined,
+      };
+
+      // Update messages, replacing any with the same ID (consolidate)
+      setTranscriptMessages((prevMessages) => {
+        // Remove any existing message with the same ID
+        const filteredMessages = prevMessages.filter(
+          (m) => m.id !== newMessage.id
+        );
+        // Add the new message
+        return [...filteredMessages, newMessage];
+      });
     }
-  }, [transcriber.output, updateTranscription]);
+  }, [
+    transcriber.output,
+    updateTranscription,
+    currentTranscriptionSource,
+    audioUrl,
+    downloadUrl,
+  ]);
+
+  // Reset session IDs when new recordings start
+  const resetSessionIds = () => {
+    micSessionIdRef.current = null;
+    tabSessionIdRef.current = null;
+  };
 
   // Preload the Whisper model when component mounts
   useEffect(() => {
@@ -341,6 +421,7 @@ function RealTimeAudioTranscriber() {
 
     try {
       isProcessingAudioRef.current = true;
+      setCurrentTranscriptionSource("microphone");
       setTranscriptionStatus("Processing 5-second audio chunk...");
 
       setLastChunkTime(Date.now());
@@ -441,6 +522,9 @@ function RealTimeAudioTranscriber() {
 
   // Modify the startRecording function
   const startRecording = async () => {
+    // Reset session ID for microphone
+    micSessionIdRef.current = null;
+
     try {
       if (permissionStatus !== "granted") {
         requestMicrophonePermission();
@@ -669,12 +753,15 @@ function RealTimeAudioTranscriber() {
     return date.toLocaleString();
   };
 
-  // Add a function to transcribe the last recording
+  // Modify the transcribeLastRecording function
   const transcribeLastRecording = async () => {
     if (!audioUrl) {
       setTranscriptionStatus("No recording available to transcribe");
       return;
     }
+
+    // Reset session ID for microphone to create a new entry
+    micSessionIdRef.current = null;
 
     // Check if transcription is possible
     if (!canTranscribe()) {
@@ -682,6 +769,9 @@ function RealTimeAudioTranscriber() {
     }
 
     try {
+      setCurrentTranscriptionSource("microphone");
+      setTranscriptionStatus("Transcribing microphone recording...");
+
       // Fetch the audio data from the blob URL
       const response = await fetch(audioUrl);
       const audioBlob = await response.blob();
@@ -706,15 +796,27 @@ function RealTimeAudioTranscriber() {
     }
   };
 
+  // Add a function to get the most recent transcript
+  const getLatestTranscript = (): TranscriptMessage | null => {
+    if (transcriptMessages.length === 0) return null;
+
+    return transcriptMessages
+      .slice()
+      .sort(
+        (a, b) =>
+          new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+      )[0];
+  };
+
   let previousTabStream: MediaStream | null = null;
 
-  const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
-  const [isTabAudioRecording, setIsTabAudioRecording] =
-    useState<boolean>(false);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const audioElementRef = useRef<HTMLAudioElement | null>(null);
 
   const startCapture = async () => {
+    // Reset session ID for tab audio
+    tabSessionIdRef.current = null;
+
     setDownloadUrl(null);
     setIsTabAudioRecording(true);
 
@@ -770,6 +872,7 @@ function RealTimeAudioTranscriber() {
         const url = URL.createObjectURL(blob);
         setDownloadUrl(url);
         setIsTabAudioRecording(false);
+        setCaptureTimestamp(new Date().toISOString());
 
         // Stop live monitoring
         if (audioElementRef.current) {
@@ -808,6 +911,49 @@ function RealTimeAudioTranscriber() {
       if (audioElementRef.current) {
         audioElementRef.current.srcObject = null;
       }
+    }
+  };
+
+  // Modify the transcribeCapturedAudio function
+  const transcribeCapturedAudio = async () => {
+    if (!downloadUrl) {
+      setTranscriptionStatus("No tab audio capture available to transcribe");
+      return;
+    }
+
+    // Reset session ID for tab audio to create a new entry
+    tabSessionIdRef.current = null;
+
+    // Check if transcription is possible
+    if (!canTranscribe()) {
+      return;
+    }
+
+    try {
+      setCurrentTranscriptionSource("tab");
+      setTranscriptionStatus("Transcribing tab audio capture...");
+
+      // Fetch the audio data from the blob URL
+      const response = await fetch(downloadUrl);
+      const audioBlob = await response.blob();
+      const arrayBuffer = await audioBlob.arrayBuffer();
+
+      // Create or reuse audio context
+      if (!audioContextRef.current) {
+        audioContextRef.current = new AudioContext({
+          sampleRate: SAMPLING_RATE,
+        });
+      }
+
+      // Decode the audio data
+      const audioBuffer = await audioContextRef.current.decodeAudioData(
+        arrayBuffer
+      );
+
+      // Process with Whisper
+      await transcriber.start(audioBuffer);
+    } catch (error) {
+      setTranscriptionStatus(`Transcription error: ${error}`);
     }
   };
 
@@ -946,7 +1092,7 @@ function RealTimeAudioTranscriber() {
 
         <div className="flex flex-col gap-4 items-center justify-center">
           {!isRecording ? (
-            <div className="flex gap-2">
+            <div className="flex gap-2 flex-wrap justify-center">
               <button
                 onClick={startRecording}
                 disabled={
@@ -970,19 +1116,62 @@ function RealTimeAudioTranscriber() {
                   ? "Model is loading..."
                   : "Start Microphone Recording"}
               </button>
+              {!isTabAudioRecording ? (
+                <button
+                  className={`flex items-center justify-center px-6 py-3 rounded-md font-medium text-white bg-blue-600 hover:bg-blue-700`}
+                  onClick={startCapture}
+                >
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    className="h-5 w-5 mr-2"
+                    viewBox="0 0 20 20"
+                    fill="currentColor"
+                  >
+                    <path d="M10 2a4 4 0 00-4 4v4a4 4 0 008 0V6a4 4 0 00-4-4z" />
+                    <path d="M4 10h2v2a6 6 0 0012 0v-2h2v2a8 8 0 01-16 0v-2z" />
+                  </svg>
+                  Start Tab Audio Capture
+                </button>
+              ) : (
+                <button
+                  className={`flex items-center justify-center px-6 py-3 rounded-md font-medium text-white bg-red-600 hover:bg-red-700`}
+                  onClick={stopCapture}
+                >
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    className="h-5 w-5 mr-2"
+                    viewBox="0 0 20 20"
+                    fill="currentColor"
+                  >
+                    <rect x="5" y="5" width="10" height="10" />
+                  </svg>
+                  Stop Tab Audio Capture
+                </button>
+              )}
               {audioUrl && (
                 <button
                   onClick={transcribeLastRecording}
-                  disabled={
-                    permissionStatus !== "granted" || transcriber.isModelLoading
-                  }
+                  disabled={transcriber.isModelLoading || transcriber.isBusy}
                   className={`flex items-center justify-center px-6 py-3 rounded-md font-medium text-white ${
-                    permissionStatus !== "granted" || transcriber.isModelLoading
+                    transcriber.isModelLoading || transcriber.isBusy
                       ? "bg-gray-400 cursor-not-allowed"
                       : "bg-blue-600 hover:bg-blue-700"
                   }`}
                 >
                   Transcribe Last Recording
+                </button>
+              )}
+              {downloadUrl && (
+                <button
+                  onClick={transcribeCapturedAudio}
+                  disabled={transcriber.isModelLoading || transcriber.isBusy}
+                  className={`flex items-center justify-center px-6 py-3 rounded-md font-medium text-white ${
+                    transcriber.isModelLoading || transcriber.isBusy
+                      ? "bg-gray-400 cursor-not-allowed"
+                      : "bg-blue-600 hover:bg-blue-700"
+                  }`}
+                >
+                  Transcribe Tab Capture
                 </button>
               )}
             </div>
@@ -1002,34 +1191,17 @@ function RealTimeAudioTranscriber() {
               Stop Recording
             </button>
           )}
-          {!isTabAudioRecording ? (
-            <button
-              className={`flex items-center justify-center px-6 py-3 rounded-md font-medium text-white bg-blue-600 hover:bg-blue-700`}
-              onClick={startCapture}
-            >
-              Start Audio Capture
-            </button>
-          ) : (
-            <button
-              className={`flex items-center justify-center px-6 py-3 rounded-md font-medium text-white bg-red-600 hover:bg-red-700`}
-              onClick={stopCapture}
-            >
-              Stop Capturing
-            </button>
-          )}
 
           {isTabAudioRecording && (
-            <p style={{ color: "green" }}>🎙️ Capturing audio...</p>
-          )}
-
-          {downloadUrl && (
-            <div>
-              <a href={downloadUrl} download="captured_audio.webm">
-                Download Captured Audio
-              </a>
+            <div className="flex items-center mt-2">
+              <div className="w-3 h-3 bg-red-500 rounded-full animate-pulse mr-2"></div>
+              <span className="text-sm text-green-700 font-medium">
+                Capturing tab audio...
+              </span>
             </div>
           )}
 
+          {/* Hidden audio element for monitoring */}
           <audio ref={audioElementRef} style={{ display: "none" }} controls />
         </div>
 
@@ -1062,35 +1234,138 @@ function RealTimeAudioTranscriber() {
         )}
       </div>
 
-      {/* Transcript Display */}
+      {/* Transcript Conversation */}
       <div className="bg-white rounded-lg shadow p-4 flex-grow">
         <div className="flex justify-between items-center mb-3">
-          <h3 className="text-lg font-medium">Live Transcript</h3>
-
-          {transcriber.output?.text && (
-            <button
-              onClick={() =>
-                navigator.clipboard.writeText(transcriber.output?.text || "")
-              }
-              className="text-xs px-3 py-1 bg-gray-100 hover:bg-gray-200 rounded-md"
-            >
-              Copy
-            </button>
+          <h3 className="text-lg font-medium">Transcript Conversation</h3>
+          {transcriptMessages.length > 0 && (
+            <div className="flex gap-2">
+              <button
+                onClick={() => {
+                  const fullText = transcriptMessages
+                    .map(
+                      (m) =>
+                        `[${m.source}] ${formatTimestamp(m.timestamp)}: ${
+                          m.text
+                        }`
+                    )
+                    .join("\n\n");
+                  navigator.clipboard.writeText(fullText);
+                }}
+                className="text-xs px-3 py-1 bg-gray-100 hover:bg-gray-200 rounded-md"
+              >
+                Copy All
+              </button>
+              <button
+                onClick={() => {
+                  setTranscriptMessages([]);
+                  setTranscriptionStatus("Transcript history cleared");
+                }}
+                className="text-xs px-3 py-1 bg-red-100 hover:bg-red-200 text-red-700 rounded-md"
+              >
+                Clear All
+              </button>
+            </div>
           )}
         </div>
 
-        <div className="border border-gray-200 rounded-lg p-4 min-h-[200px] max-h-[400px] overflow-y-auto bg-gray-50">
-          {transcriber.output?.text ? (
-            <p className="whitespace-pre-wrap text-gray-800">
-              {transcriber.output.text}
+        {/* Latest transcript preview */}
+        {getLatestTranscript() && (
+          <div className="mb-3 p-3 border border-blue-200 rounded-md bg-blue-50">
+            <div className="flex justify-between items-center mb-2">
+              <h4 className="text-sm font-semibold text-blue-800">
+                Latest Transcript
+              </h4>
+              <span className="text-xs text-gray-500">
+                {getLatestTranscript()?.source === "microphone"
+                  ? "Microphone"
+                  : "Tab Audio"}{" "}
+                •
+                {new Date(
+                  getLatestTranscript()?.timestamp || ""
+                ).toLocaleTimeString()}
+              </span>
+            </div>
+            <p className="text-sm text-gray-800 whitespace-pre-wrap">
+              {getLatestTranscript()?.text}
             </p>
+          </div>
+        )}
+
+        <div className="border border-gray-200 rounded-lg p-4 min-h-[300px] max-h-[500px] overflow-y-auto bg-gray-50">
+          {transcriptMessages.length > 0 ? (
+            <div className="flex flex-col space-y-4">
+              {/* Sort messages by timestamp */}
+              {transcriptMessages
+                .slice()
+                .sort(
+                  (a, b) =>
+                    new Date(a.timestamp).getTime() -
+                    new Date(b.timestamp).getTime()
+                )
+                .map((message, index, sortedMessages) => {
+                  // Check if we need to display a date header
+                  const messageDate = new Date(message.timestamp);
+                  const showDateHeader =
+                    index === 0 ||
+                    new Date(
+                      sortedMessages[index - 1].timestamp
+                    ).toDateString() !== messageDate.toDateString();
+
+                  return (
+                    <div key={message.id} className="flex flex-col">
+                      {showDateHeader && (
+                        <div className="text-center my-2">
+                          <span className="inline-block px-3 py-1 text-xs bg-gray-200 text-gray-700 rounded-full">
+                            {messageDate.toDateString()}
+                          </span>
+                        </div>
+                      )}
+                      <div
+                        className={`flex ${
+                          message.source === "microphone"
+                            ? "justify-end"
+                            : "justify-start"
+                        }`}
+                      >
+                        <div
+                          className={`max-w-[80%] rounded-lg p-3 ${
+                            message.source === "microphone"
+                              ? "bg-blue-100 text-blue-800"
+                              : "bg-green-100 text-green-800"
+                          }`}
+                        >
+                          <div className="flex items-center justify-between mb-2 text-xs text-gray-500">
+                            <span className="font-semibold">
+                              {message.source === "microphone"
+                                ? "Microphone"
+                                : "Tab Audio"}
+                            </span>
+                            <span>{messageDate.toLocaleTimeString()}</span>
+                          </div>
+                          <p className="whitespace-pre-wrap text-sm">
+                            {message.text}
+                          </p>
+                          {message.audioUrl && (
+                            <div className="mt-2">
+                              <audio
+                                src={message.audioUrl}
+                                controls
+                                className="w-full h-8"
+                              ></audio>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+            </div>
           ) : (
-            <p className="text-gray-500 italic">
+            <p className="text-gray-500 italic text-center">
               {transcriber.isModelLoading
                 ? "Waiting for model to load..."
-                : isRecording && autoTranscribe
-                ? "Listening for speech to transcribe..."
-                : "Start recording to see transcription here"}
+                : "No transcriptions yet. Start recording or capture tab audio and transcribe them to see the conversation."}
             </p>
           )}
         </div>
@@ -1108,37 +1383,82 @@ function RealTimeAudioTranscriber() {
         )}
       </div>
 
-      {/* Previous Recording (if available) */}
-      {audioUrl && (
-        <div className="bg-white rounded-lg shadow p-4">
-          <h3 className="text-lg font-medium mb-3">Previous Recording</h3>
-          <audio
-            controls
-            src={audioUrl}
-            className="w-full mb-3 rounded"
-          ></audio>
-          <div className="flex space-x-3">
-            <button
-              onClick={transcribeLastRecording}
-              disabled={transcriber.isModelLoading || transcriber.isBusy}
-              className={`text-sm px-4 py-2 rounded-md font-medium ${
-                transcriber.isModelLoading || transcriber.isBusy
-                  ? "bg-gray-200 text-gray-500 cursor-not-allowed"
-                  : "bg-blue-100 text-blue-700 hover:bg-blue-200"
-              }`}
-            >
-              Transcribe This Recording
-            </button>
-            <a
-              href={audioUrl}
-              download={`recording-${Date.now()}.webm`}
-              className="text-sm px-4 py-2 bg-green-100 text-green-700 hover:bg-green-200 rounded-md font-medium"
-            >
-              Download
-            </a>
+      {/* Audio Players */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {/* Previous Recording (if available) */}
+        {audioUrl && (
+          <div className="bg-white rounded-lg shadow p-4">
+            <h3 className="text-lg font-medium mb-2">Microphone Recording</h3>
+            {recordingTimestamp && (
+              <p className="text-xs text-gray-500 mb-2">
+                Recorded on: {formatTimestamp(recordingTimestamp)}
+              </p>
+            )}
+            <audio
+              controls
+              src={audioUrl}
+              className="w-full mb-3 rounded"
+            ></audio>
+            <div className="flex space-x-3">
+              <button
+                onClick={transcribeLastRecording}
+                disabled={transcriber.isModelLoading || transcriber.isBusy}
+                className={`text-sm px-4 py-2 rounded-md font-medium ${
+                  transcriber.isModelLoading || transcriber.isBusy
+                    ? "bg-gray-200 text-gray-500 cursor-not-allowed"
+                    : "bg-blue-100 text-blue-700 hover:bg-blue-200"
+                }`}
+              >
+                Transcribe
+              </button>
+              <a
+                href={audioUrl}
+                download={`recording-${Date.now()}.webm`}
+                className="text-sm px-4 py-2 bg-green-100 text-green-700 hover:bg-green-200 rounded-md font-medium"
+              >
+                Download
+              </a>
+            </div>
           </div>
-        </div>
-      )}
+        )}
+
+        {/* Previous Capture (if available) */}
+        {downloadUrl && (
+          <div className="bg-white rounded-lg shadow p-4">
+            <h3 className="text-lg font-medium mb-2">Tab Audio Capture</h3>
+            {captureTimestamp && (
+              <p className="text-xs text-gray-500 mb-2">
+                Captured on: {formatTimestamp(captureTimestamp)}
+              </p>
+            )}
+            <audio
+              controls
+              src={downloadUrl}
+              className="w-full mb-3 rounded"
+            ></audio>
+            <div className="flex space-x-3">
+              <button
+                onClick={transcribeCapturedAudio}
+                disabled={transcriber.isModelLoading || transcriber.isBusy}
+                className={`text-sm px-4 py-2 rounded-md font-medium ${
+                  transcriber.isModelLoading || transcriber.isBusy
+                    ? "bg-gray-200 text-gray-500 cursor-not-allowed"
+                    : "bg-blue-100 text-blue-700 hover:bg-blue-200"
+                }`}
+              >
+                Transcribe
+              </button>
+              <a
+                href={downloadUrl}
+                download={`tab-capture-${Date.now()}.webm`}
+                className="text-sm px-4 py-2 bg-green-100 text-green-700 hover:bg-green-200 rounded-md font-medium"
+              >
+                Download
+              </a>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
