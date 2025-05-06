@@ -58,7 +58,7 @@ export default defineBackground(() => {
   let currentRecordingMimeType: string = "audio/webm";
   let lastRecordingUrl: string | null = null;
   let currentPanelTabId = null;
-  let recordingSource: "mic" | "tab" = "mic"; // Track the current recording source
+  let recordingSource: "mic" | "tab" | "both" = "mic"; // Track the current recording source
   let mediaRecorder: any = null;
   let tabCaptureStream: MediaStream | null = null;
   let audioChunks: BlobPart[] = [];
@@ -198,21 +198,48 @@ export default defineBackground(() => {
             console.log("Background: Received startRecording action");
             // Set recording source if provided in the request
             if (request.source) {
-              recordingSource = request.source;
+              recordingSource =
+                request.source === "both"
+                  ? "both"
+                  : (request.source as "mic" | "tab");
             }
 
-            initiateRecordingStart()
-              .then(() => {
-                sendResponse({ success: true });
-              })
-              .catch((error) => {
-                console.error("Error starting recording:", error);
-                sendResponse({
-                  success: false,
-                  error: error.toString(),
+            // If source is "both", we need to record both microphone and tab
+            if (recordingSource === "both") {
+              // First initiate tab recording using Promise instead of await
+              initiateRecordingStart()
+                .then(() => {
+                  // Update the recordingSource temporarily to help UI
+                  sendResponse({
+                    success: true,
+                    tabAudioCaptured: true,
+                  });
+                })
+                .catch((error) => {
+                  console.error("Error starting combined recording:", error);
+                  sendResponse({
+                    success: false,
+                    error: error.message || "Unknown error",
+                  });
                 });
-              });
-            return true;
+            } else {
+              // For single source recording
+              initiateRecordingStart()
+                .then(() => {
+                  sendResponse({
+                    success: true,
+                    tabAudioCaptured: recordingSource === "tab",
+                  });
+                })
+                .catch((error) => {
+                  console.error("Error starting recording:", error);
+                  sendResponse({
+                    success: false,
+                    error: error.message || "Unknown error",
+                  });
+                });
+            }
+            return true; // This will keep the message channel open for the async response
 
           case "stopRecording":
             console.log("Background: Received stopRecording action");
@@ -685,7 +712,7 @@ export default defineBackground(() => {
         recordingData = null;
         audioChunks = [];
 
-        if (recordingSource === "tab") {
+        if (recordingSource === "tab" || recordingSource === "both") {
           // For tab audio, use direct implementation
           try {
             await startTabAudioCapture();
@@ -696,9 +723,29 @@ export default defineBackground(() => {
               message: {
                 type: "RECORDING_STATUS",
                 status: "started",
-                source: "tab",
+                source: recordingSource,
               },
             });
+
+            // If "both" source type, we need to also start microphone recording in offscreen
+            if (recordingSource === "both") {
+              try {
+                await createOffscreenDocument();
+                // Send start recording message to offscreen document
+                await sendMessageToOffscreenDocument(
+                  "START_OFFSCREEN_RECORDING"
+                );
+                console.log(
+                  `Background: Microphone recording also started for combined mode`
+                );
+              } catch (error) {
+                console.error(
+                  "Error starting microphone part of combined recording:",
+                  error
+                );
+                // We still resolve because tab is recording
+              }
+            }
 
             resolve(true);
           } catch (error) {
@@ -709,7 +756,7 @@ export default defineBackground(() => {
             reject(error);
           }
         } else {
-          // For microphone, use offscreen document
+          // For microphone only, use offscreen document
           // Create offscreen document if needed
           try {
             await createOffscreenDocument();
@@ -762,10 +809,29 @@ export default defineBackground(() => {
           return;
         }
 
-        if (recordingSource === "tab") {
+        if (recordingSource === "tab" || recordingSource === "both") {
           // For tab audio, use direct implementation
           try {
             await stopTabAudioCapture();
+
+            // For "both" source, we also need to stop microphone recording
+            if (recordingSource === "both") {
+              try {
+                // Stop the offscreen microphone recording as well
+                await sendMessageToOffscreenDocument(
+                  "STOP_OFFSCREEN_RECORDING"
+                );
+                console.log(
+                  "Background: Microphone part of combined recording stopped"
+                );
+              } catch (error) {
+                console.error(
+                  "Error stopping microphone part of combined recording:",
+                  error
+                );
+              }
+            }
+
             isRecording = false;
 
             // Check for lastRecordingUrl
@@ -776,7 +842,7 @@ export default defineBackground(() => {
                   type: "RECORDING_STATUS",
                   status: "stopped",
                   recordingUrl: lastRecordingUrl,
-                  source: "tab",
+                  source: recordingSource,
                 },
               });
             } else {
@@ -785,7 +851,7 @@ export default defineBackground(() => {
                 message: {
                   type: "RECORDING_STATUS",
                   status: "stopped",
-                  source: "tab",
+                  source: recordingSource,
                 },
               });
             }
@@ -799,7 +865,7 @@ export default defineBackground(() => {
             reject(error);
           }
         } else {
-          // For microphone, use offscreen document
+          // For microphone only, use offscreen document
           // Send stop recording message to offscreen document
           sendMessageToOffscreenDocument("STOP_OFFSCREEN_RECORDING")
             .then(() => {
