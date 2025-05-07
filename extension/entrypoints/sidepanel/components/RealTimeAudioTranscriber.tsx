@@ -641,13 +641,6 @@ function RealTimeAudioTranscriber() {
         const audioUrl = URL.createObjectURL(audioBlob);
 
         setAudioUrl(audioUrl);
-        setRecordingStatus(
-          `Recording saved (Source: ${
-            recordingSource === "both"
-              ? "Microphone + Tab Audio"
-              : "Microphone Only"
-          })`
-        );
 
         // Save the recording via the background script
         await browser.runtime.sendMessage({
@@ -655,6 +648,9 @@ function RealTimeAudioTranscriber() {
           audioUrl: audioUrl,
           recordingSource: recordingSource,
         });
+
+        // Update recording status with success message
+        setRecordingStatus("Recording saved successfully!");
 
         // Get the updated recording with timestamp
         const response = await browser.runtime.sendMessage({
@@ -1020,7 +1016,7 @@ function RealTimeAudioTranscriber() {
 
       // Set recording status
       setRecordingStatus(
-        "Starting combined recording (microphone + tab audio)..."
+        "Initializing recording of microphone and tab audio..."
       );
       setTranscriptionCount(0);
       setLastChunkTime(null);
@@ -1031,6 +1027,7 @@ function RealTimeAudioTranscriber() {
 
       // First, let's start tab audio capture directly using Chrome API
       let tabStream: MediaStream | null = null;
+      let tabStatus = "";
       try {
         tabStream = await new Promise<MediaStream>((resolve, reject) => {
           // @ts-ignore - Chrome browser API
@@ -1091,109 +1088,139 @@ function RealTimeAudioTranscriber() {
         tabRecorder.start();
         recorderRef.current = tabRecorder;
         setIsTabAudioRecording(true);
+        tabStatus = "✓ Tab audio capture active";
       } catch (tabError) {
         console.error("Error starting tab capture:", tabError);
-        setRecordingStatus(
-          `Tab audio capture failed: ${tabError}. Continuing with microphone only.`
-        );
+        tabStatus = `✗ Tab audio capture failed: ${tabError}`;
+        setIsTabAudioRecording(false);
       }
 
       // Now get microphone stream with high-quality settings
-      const micStream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-          sampleRate: SAMPLING_RATE,
-        },
-      });
-
-      streamRef.current = micStream;
-
-      // Create an audio context for microphone monitoring
-      const audioContext = new AudioContext();
-      const source = audioContext.createMediaStreamSource(micStream);
-
-      // Create a gain node to control volume and prevent feedback
-      const gainNode = audioContext.createGain();
-      gainNode.gain.value = 0.5; // Set to a lower value to prevent feedback
-
-      // Connect the source to the gain node and the gain node to the destination
-      source.connect(gainNode);
-      gainNode.connect(audioContext.destination);
-
-      // Set up direct audio capture for real-time transcription
-      const cleanup = setupDirectAudioCapture(micStream);
-
-      // Notify the background script that we're doing a combined recording
-      // This is mainly for state tracking
-      await browser.runtime.sendMessage({
-        action: "startRecording",
-        source: "both", // Explicitly request both sources
-      });
-
-      // Set recording state
-      setTabAudioCaptured(true);
-      setRecordingSource("both");
-      setRecordingStatus("Recording from microphone and tab audio...");
-
-      // Create a media recorder for saving the microphone recording
-      const mimeType = getSupportedMimeType();
-      const options = { mimeType };
-      const mediaRecorder = new MediaRecorder(micStream, options);
-      mediaRecorderRef.current = mediaRecorder;
-      audioChunksRef.current = [];
-
-      // Set up event handler to save chunks
-      mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          audioChunksRef.current.push(event.data);
-        }
-      };
-
-      // Set up stop handler to save the recording
-      mediaRecorder.onstop = async () => {
-        // Clean up the direct audio capture
-        cleanup();
-
-        // Disconnect audio monitoring
-        source.disconnect();
-        gainNode.disconnect();
-        audioContext.close().catch((err) => {
-          console.error("Error closing audio context:", err);
+      let micStatus = "";
+      try {
+        const micStream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+            sampleRate: SAMPLING_RATE,
+          },
         });
 
-        // Create a blob from the recorded chunks
-        const audioBlob = new Blob(audioChunksRef.current, {
-          type: mimeType,
-        });
-        const audioUrl = URL.createObjectURL(audioBlob);
+        streamRef.current = micStream;
 
-        setAudioUrl(audioUrl);
-        setRecordingStatus("Recording saved (Source: Microphone + Tab Audio)");
+        // Create an audio context for microphone monitoring
+        const audioContext = new AudioContext();
+        const source = audioContext.createMediaStreamSource(micStream);
 
-        // Save the recording via the background script
+        // Create a gain node to control volume and prevent feedback
+        const gainNode = audioContext.createGain();
+        gainNode.gain.value = 0.5; // Set to a lower value to prevent feedback
+
+        // Connect the source to the gain node and the gain node to the destination
+        source.connect(gainNode);
+        gainNode.connect(audioContext.destination);
+
+        // Set up direct audio capture for real-time transcription
+        const cleanup = setupDirectAudioCapture(micStream);
+
+        // Notify the background script that we're doing a combined recording
+        // This is mainly for state tracking
         await browser.runtime.sendMessage({
-          action: "saveRecording",
-          audioUrl: audioUrl,
-          recordingSource: "both",
+          action: "startRecording",
+          source: "both", // Explicitly request both sources
         });
 
-        // Get the updated recording with timestamp
-        const response = await browser.runtime.sendMessage({
-          action: "getLastRecording",
-        });
-        if (response.recording) {
-          setRecordingTimestamp(response.recording.timestamp);
+        // Set recording state
+        setTabAudioCaptured(tabStream !== null);
+        setRecordingSource(tabStream !== null ? "both" : "mic");
+
+        // Create a media recorder for saving the microphone recording
+        const mimeType = getSupportedMimeType();
+        const options = { mimeType };
+        const mediaRecorder = new MediaRecorder(micStream, options);
+        mediaRecorderRef.current = mediaRecorder;
+        audioChunksRef.current = [];
+
+        // Set up event handler to save chunks
+        mediaRecorder.ondataavailable = (event) => {
+          if (event.data.size > 0) {
+            audioChunksRef.current.push(event.data);
+          }
+        };
+
+        // Set up stop handler to save the recording
+        mediaRecorder.onstop = async () => {
+          // Clean up the direct audio capture
+          cleanup();
+
+          // Disconnect audio monitoring
+          source.disconnect();
+          gainNode.disconnect();
+          audioContext.close().catch((err) => {
+            console.error("Error closing audio context:", err);
+          });
+
+          // Create a blob from the recorded chunks
+          const audioBlob = new Blob(audioChunksRef.current, {
+            type: mimeType,
+          });
+          const audioUrl = URL.createObjectURL(audioBlob);
+
+          setAudioUrl(audioUrl);
+
+          // Save the recording via the background script
+          await browser.runtime.sendMessage({
+            action: "saveRecording",
+            audioUrl: audioUrl,
+            recordingSource: recordingSource,
+          });
+
+          // Update recording status with success message
+          setRecordingStatus("Recording saved successfully!");
+
+          // Get the updated recording with timestamp
+          const response = await browser.runtime.sendMessage({
+            action: "getLastRecording",
+          });
+          if (response.recording) {
+            setRecordingTimestamp(response.recording.timestamp);
+          }
+        };
+
+        // Start recording
+        mediaRecorder.start(1000); // Collect data every 1 second for saving
+        micStatus = "✓ Microphone recording active";
+
+        setIsRecording(true);
+        setIsTranscribing(autoTranscribe);
+        startTimer();
+      } catch (micError) {
+        console.error("Error starting microphone recording:", micError);
+        micStatus = `✗ Microphone recording failed: ${micError}`;
+        stopMediaTracks();
+      }
+
+      // Update the final recording status based on both mic and tab status
+      if (micStatus.startsWith("✓")) {
+        if (tabStatus.startsWith("✓")) {
+          setRecordingStatus(
+            `Recording active: Both microphone and tab audio\n${micStatus}\n${tabStatus}`
+          );
+        } else {
+          setRecordingStatus(
+            `Recording active: Microphone only\n${micStatus}\n${tabStatus}`
+          );
         }
-      };
-
-      // Start recording
-      mediaRecorder.start(1000); // Collect data every 1 second for saving
-
-      setIsRecording(true);
-      setIsTranscribing(autoTranscribe);
-      startTimer();
+      } else if (tabStatus.startsWith("✓")) {
+        setRecordingStatus(
+          `Recording active: Tab audio only\n${micStatus}\n${tabStatus}`
+        );
+      } else {
+        setRecordingStatus(`Recording failed\n${micStatus}\n${tabStatus}`);
+        // If both failed, ensure we're not in recording state
+        setIsRecording(false);
+      }
     } catch (error) {
       // Handle specific permission errors
       if (error instanceof DOMException && error.name === "NotAllowedError") {
@@ -1353,10 +1380,20 @@ function RealTimeAudioTranscriber() {
           </label>
         </div>
 
+        {/* Add explanation text */}
+        <div className="mb-4 text-sm text-gray-600 bg-blue-50 p-3 rounded-lg">
+          <p className="font-medium mb-1">Combined Audio Recording</p>
+          <p>
+            This recorder captures both your microphone and the current tab's
+            audio simultaneously. After recording, you can transcribe both
+            sources separately.
+          </p>
+        </div>
+
         <div className="flex flex-col gap-4 items-center justify-center">
           {!isRecording ? (
             <div className="flex gap-2 flex-wrap justify-center">
-              {/* New button for combined recording */}
+              {/* Keep only the combined recording button */}
               <button
                 onClick={startGeneralRecording}
                 disabled={
@@ -1378,63 +1415,10 @@ function RealTimeAudioTranscriber() {
                 </svg>
                 {transcriber.isModelLoading
                   ? "Model is loading..."
-                  : "Start Recording (Mic + Tab)"}
+                  : "Start Recording"}
               </button>
-              <button
-                onClick={startRecording}
-                disabled={
-                  permissionStatus !== "granted" || transcriber.isModelLoading
-                }
-                className={`flex items-center justify-center px-6 py-3 rounded-md font-medium text-white ${
-                  permissionStatus !== "granted" || transcriber.isModelLoading
-                    ? "bg-gray-400 cursor-not-allowed"
-                    : "bg-blue-600 hover:bg-blue-700"
-                }`}
-              >
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  className="h-5 w-5 mr-2"
-                  viewBox="0 0 20 20"
-                  fill="currentColor"
-                >
-                  <circle cx="10" cy="10" r="8" />
-                </svg>
-                {transcriber.isModelLoading
-                  ? "Model is loading..."
-                  : "Start Microphone Recording"}
-              </button>
-              {!isTabAudioRecording ? (
-                <button
-                  className={`flex items-center justify-center px-6 py-3 rounded-md font-medium text-white bg-blue-600 hover:bg-blue-700`}
-                  onClick={startCapture}
-                >
-                  <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    className="h-5 w-5 mr-2"
-                    viewBox="0 0 20 20"
-                    fill="currentColor"
-                  >
-                    <path d="M10 2a4 4 0 00-4 4v4a4 4 0 008 0V6a4 4 0 00-4-4z" />
-                    <path d="M4 10h2v2a6 6 0 0012 0v-2h2v2a8 8 0 01-16 0v-2z" />
-                  </svg>
-                  Start Tab Audio Capture
-                </button>
-              ) : (
-                <button
-                  className={`flex items-center justify-center px-6 py-3 rounded-md font-medium text-white bg-red-600 hover:bg-red-700`}
-                  onClick={stopCapture}
-                >
-                  <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    className="h-5 w-5 mr-2"
-                    viewBox="0 0 20 20"
-                    fill="currentColor"
-                  >
-                    <rect x="5" y="5" width="10" height="10" />
-                  </svg>
-                  Stop Tab Audio Capture
-                </button>
-              )}
+
+              {/* Transcription buttons for existing recordings */}
               {audioUrl && (
                 <button
                   onClick={transcribeLastRecording}
@@ -1445,7 +1429,7 @@ function RealTimeAudioTranscriber() {
                       : "bg-blue-600 hover:bg-blue-700"
                   }`}
                 >
-                  Transcribe Last Recording
+                  Transcribe Microphone Recording
                 </button>
               )}
               {downloadUrl && (
@@ -1458,7 +1442,7 @@ function RealTimeAudioTranscriber() {
                       : "bg-blue-600 hover:bg-blue-700"
                   }`}
                 >
-                  Transcribe Tab Capture
+                  Transcribe Tab Recording
                 </button>
               )}
             </div>
@@ -1479,11 +1463,11 @@ function RealTimeAudioTranscriber() {
             </button>
           )}
 
-          {isTabAudioRecording && (
+          {isTabAudioRecording && isRecording && (
             <div className="flex items-center mt-2">
               <div className="w-3 h-3 bg-red-500 rounded-full animate-pulse mr-2"></div>
               <span className="text-sm text-green-700 font-medium">
-                Capturing tab audio...
+                Recording: {formatTime(recordingTime)}{" "}
               </span>
             </div>
           )}
@@ -1494,11 +1478,6 @@ function RealTimeAudioTranscriber() {
 
         {isRecording && (
           <div className="mt-4 flex items-center justify-center text-sm font-medium">
-            <div className="flex items-center">
-              <div className="w-3 h-3 bg-red-500 rounded-full animate-pulse mr-2"></div>
-              <span>Recording: {formatTime(recordingTime)}</span>
-            </div>
-
             {recordingSource && (
               <span className="ml-4 px-2 py-1 bg-gray-100 rounded-full text-xs">
                 Source:{" "}
